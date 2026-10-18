@@ -4,6 +4,10 @@
 
 深色顶栏 + 暖白画布 + 浅灰双层网格，交互与视觉对齐 Miro 一类的在线白板。
 
+## 在线预览
+
+**https://ujunn.github.io/inkboard/**
+
 ## 直接打开
 
 ```bash
