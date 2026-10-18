@@ -5,7 +5,13 @@
 - 前端：`inkboard.html` 一个文件，Canvas + DOM 混合渲染，**无框架、无构建、无 CDN**
 - 后端：`server.js` 一个文件，**零 npm 依赖**——WebSocket 握手与帧编解码全部手写（RFC 6455），只用 Node 内置的 `http` / `crypto` / `fs` / `path`
 
-> 静态预览（无服务端，单机模式）：https://ujunn.github.io/inkboard/
+## 在线协作地址
+
+**https://inkboard.app.workbuddy.host/?room=team-a**
+
+换掉 `room=` 后面的名字就是另一块独立画布。直接把这个链接发给 4 个队友，5 人实时同屏。
+
+> 纯静态预览（GitHub Pages，无服务端，只能单机）：https://ujunn.github.io/inkboard/
 
 ## 跑起来
 
