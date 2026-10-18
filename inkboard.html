@@ -1,0 +1,1637 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>砚 · INKBOARD — 实时协作白板</title>
+<style>
+/* ============================================================
+   设计令牌
+   ============================================================ */
+:root{
+  /* 墨色（顶栏与文字） */
+  --ink-950:#0D0F13;
+  --ink-900:#14161B;
+  --ink-860:#1A1D24;
+  --ink-800:#22262F;
+  --ink-700:#2E333E;
+  --ink-500:#59606E;
+  --ink-400:#7B8391;
+  --ink-300:#9AA1AD;
+
+  /* 纸面（画布） */
+  --paper:#FAFAF9;
+  --paper-2:#F2F2F0;
+  --grid-minor:rgba(20,22,27,.055);
+  --grid-major:rgba(20,22,27,.105);
+  --hairline:rgba(20,22,27,.10);
+
+  /* 强调色：朱砂 */
+  --accent:#E04A1F;
+  --accent-hi:#F2603A;
+  --accent-dim:rgba(224,74,31,.16);
+  --accent-ghost:rgba(224,74,31,.07);
+
+  /* 协作者身份色 */
+  --peer-a:#2F5FD0;
+  --peer-b:#0E8A6A;
+  --peer-c:#A63E9B;
+
+  --bar-h:56px;
+  --r-xs:4px; --r-sm:7px; --r-md:11px; --r-lg:16px;
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;
+
+  --sh-1:0 1px 2px rgba(30,33,39,.07), 0 2px 6px -2px rgba(30,33,39,.10);
+  --sh-2:0 1px 3px rgba(30,33,39,.08), 0 10px 24px -8px rgba(30,33,39,.16);
+  --sh-3:0 2px 6px rgba(30,33,39,.08), 0 24px 52px -14px rgba(30,33,39,.26);
+
+  --ease:cubic-bezier(.16,1,.3,1);
+  --d1:150ms; --d2:300ms; --d3:520ms;
+
+  /* 当前缩放比，供子元素做反向缩放（保持 UI 尺寸恒定） */
+  --z:1;
+
+  --font-ui:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI Variable Text","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --font-num:ui-monospace,"SF Mono","JetBrains Mono","Roboto Mono",Menlo,Consolas,monospace;
+}
+
+*,*::before,*::after{box-sizing:border-box;}
+html,body{height:100%;}
+body{
+  margin:0;
+  font-family:var(--font-ui);
+  color:var(--ink-900);
+  background:var(--paper);
+  overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--r-xs);}
+
+/* ============================================================
+   顶栏
+   ============================================================ */
+.topbar{
+  position:relative;
+  height:var(--bar-h);
+  display:flex;align-items:center;gap:var(--s2);
+  padding:0 var(--s4);
+  background:var(--ink-900);
+  color:#E8EAEE;
+  z-index:40;
+  box-shadow:0 1px 0 rgba(0,0,0,.5), 0 10px 30px -14px rgba(0,0,0,.55);
+  overflow:hidden;
+}
+/* 极淡噪点，让纯黑栏有材质而非塑料感 */
+.topbar::after{
+  content:"";position:absolute;inset:0;pointer-events:none;opacity:.04;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.topbar > *{position:relative;z-index:1;}
+
+/* 品牌 */
+.brand{display:flex;align-items:center;gap:10px;padding-right:var(--s2);flex:none;}
+.brand-mark{
+  width:26px;height:26px;border-radius:7px;flex:none;
+  background:linear-gradient(150deg,var(--accent-hi),var(--accent));
+  display:grid;place-items:center;
+  box-shadow:0 0 0 1px rgba(255,255,255,.14) inset, 0 2px 8px -2px rgba(224,74,31,.7);
+}
+.brand-mark svg{width:15px;height:15px;display:block;}
+.brand-text{display:flex;flex-direction:column;line-height:1.05;}
+.brand-name{
+  font-size:12.5px;font-weight:650;letter-spacing:.16em;
+  color:#F4F5F7;text-transform:uppercase;
+}
+.brand-sub{font-size:10px;letter-spacing:.06em;color:#838B99;margin-top:2px;}
+
+.rule{width:1px;height:26px;background:rgba(255,255,255,.13);flex:none;margin:0 var(--s1);}
+.spacer{flex:1 1 auto;min-width:var(--s2);}
+.grp{display:flex;align-items:center;gap:2px;flex:none;}
+
+/* 工具按钮 */
+.tool{
+  position:relative;width:36px;height:36px;border-radius:var(--r-sm);
+  display:grid;place-items:center;color:#9AA2AF;
+  transition:background var(--d1) ease, color var(--d1) ease, transform var(--d1) var(--ease);
+}
+.tool svg{width:19px;height:19px;display:block;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
+.tool:hover{background:rgba(255,255,255,.07);color:#E8EAEE;}
+.tool:active{transform:scale(.94);}
+.tool[aria-pressed="true"]{
+  background:var(--accent);color:#fff;
+  box-shadow:0 0 0 1px rgba(255,255,255,.16) inset, 0 3px 10px -3px rgba(224,74,31,.85);
+}
+.tool[aria-pressed="true"]:hover{background:var(--accent-hi);}
+.tool[disabled]{opacity:.3;pointer-events:none;}
+
+/* 浮层提示 */
+.tip{
+  position:absolute;top:calc(100% + 9px);left:50%;
+  transform:translate(-50%,-4px);
+  background:var(--ink-860);color:#E8EAEE;
+  font-size:11px;line-height:1;padding:6px 9px;border-radius:var(--r-xs);
+  white-space:nowrap;pointer-events:none;opacity:0;
+  box-shadow:0 6px 18px -6px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.08);
+  transition:opacity var(--d1) ease, transform var(--d1) var(--ease);
+  z-index:60;
+}
+.tip b{color:#FFB59E;font-weight:600;}
+.grp:hover .tool:hover .tip{opacity:1;transform:translate(-50%,0);transition-delay:260ms;}
+
+/* 色板 */
+.pal{display:flex;align-items:center;gap:6px;min-width:172px;padding-left:var(--s2);}
+.pal[hidden]{display:none;}
+.sw{
+  width:22px;height:22px;border-radius:50%;flex:none;
+  box-shadow:0 0 0 1px rgba(255,255,255,.22) inset, 0 0 0 1px rgba(0,0,0,.35);
+  transition:transform var(--d1) var(--ease), box-shadow var(--d1) ease;
+}
+.sw:hover{transform:scale(1.16);}
+.sw[aria-pressed="true"]{
+  transform:scale(1.06);
+  box-shadow:0 0 0 2px var(--ink-900), 0 0 0 3.5px #fff, 0 0 0 1px rgba(0,0,0,.35) inset;
+}
+
+/* 笔宽 */
+.brush{display:flex;align-items:center;gap:9px;padding-left:var(--s2);transition:opacity var(--d2) ease;}
+.brush[data-off="1"]{opacity:.32;}
+.brush-label{font-size:11px;color:#838B99;letter-spacing:.04em;}
+.brush-dot{
+  width:26px;height:26px;border-radius:50%;background:rgba(255,255,255,.06);
+  display:grid;place-items:center;flex:none;
+}
+.brush-dot i{display:block;border-radius:50%;background:#E8EAEE;}
+input[type=range]{
+  -webkit-appearance:none;appearance:none;width:74px;height:18px;background:none;cursor:pointer;
+}
+input[type=range]::-webkit-slider-runnable-track{height:3px;border-radius:2px;background:rgba(255,255,255,.22);}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:13px;height:13px;border-radius:50%;
+  background:#E8EAEE;margin-top:-5px;box-shadow:0 1px 3px rgba(0,0,0,.5);
+  transition:transform var(--d1) var(--ease);
+}
+input[type=range]:hover::-webkit-slider-thumb{transform:scale(1.15);}
+input[type=range]::-moz-range-track{height:3px;border-radius:2px;background:rgba(255,255,255,.22);}
+input[type=range]::-moz-range-thumb{width:13px;height:13px;border:0;border-radius:50%;background:#E8EAEE;}
+
+/* 协作者 */
+.presence{display:flex;align-items:center;gap:8px;padding-right:var(--s1);}
+.stack{display:flex;}
+.stack span{
+  width:25px;height:25px;border-radius:50%;margin-left:-7px;
+  display:grid;place-items:center;font-size:10.5px;font-weight:650;color:#fff;
+  box-shadow:0 0 0 2px var(--ink-900);
+  transition:transform var(--d2) var(--ease);
+}
+.stack span:first-child{margin-left:0;}
+.stack span:hover{transform:translateY(-2px);}
+.live{
+  display:flex;align-items:center;gap:6px;
+  font-size:11px;color:#838B99;letter-spacing:.04em;
+  padding:6px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.12);
+  transition:color var(--d1) ease,border-color var(--d1) ease,background var(--d1) ease;
+}
+.live:hover{color:#E8EAEE;border-color:rgba(255,255,255,.28);background:rgba(255,255,255,.05);}
+.live[data-on="1"]{color:#FFB59E;border-color:rgba(224,74,31,.45);background:rgba(224,74,31,.12);}
+.live i{width:6px;height:6px;border-radius:50%;background:var(--ink-500);display:block;transition:background var(--d2) ease;}
+.live[data-on="1"] i{background:var(--accent-hi);box-shadow:0 0 0 3px rgba(224,74,31,.25);}
+
+/* 缩放 */
+.zoom{display:flex;align-items:center;gap:2px;}
+.zoom-val{
+  min-width:52px;text-align:center;font-family:var(--font-num);
+  font-size:11.5px;font-variant-numeric:tabular-nums;color:#B6BCC7;
+  letter-spacing:.02em;
+}
+
+/* ============================================================
+   画布舞台
+   ============================================================ */
+.stage{
+  position:absolute;inset:var(--bar-h) 0 0 0;
+  overflow:hidden;background:var(--paper);
+  touch-action:none;
+  cursor:default;
+}
+.stage[data-tool="select"]{cursor:default;}
+.stage[data-tool="note"],.stage[data-tool="connector"]{cursor:crosshair;}
+.stage[data-tool="pen"]{cursor:crosshair;}
+.stage[data-tool="pan"],.stage.is-space{cursor:grab;}
+.stage.is-panning,.stage[data-tool="pan"].is-panning{cursor:grabbing;}
+
+#scene{position:absolute;inset:0;display:block;z-index:1;}
+
+/* 世界层：承载便签，随视口变换 */
+#world{
+  position:absolute;left:0;top:0;width:0;height:0;
+  transform-origin:0 0;z-index:2;pointer-events:none;
+  will-change:transform;
+}
+/* 绘制类工具下便签不吃事件，保证笔迹/连线可穿过 */
+.stage[data-tool="pen"] .note,
+.stage[data-tool="connector"] .note{pointer-events:none;}
+
+/* 覆盖层：选中框 / 手柄 / 浮动工具条（屏幕坐标，恒定尺寸） */
+#overlay{position:absolute;inset:0;z-index:3;pointer-events:none;}
+
+/* ---------- 便签 ---------- */
+.note{
+  position:absolute;pointer-events:auto;
+  padding:14px 15px 16px;
+  border-radius:2px;
+  font-size:15px;line-height:1.62;letter-spacing:.01em;
+  color:#1E2127;
+  word-break:break-word;white-space:pre-wrap;
+  cursor:default;user-select:none;-webkit-user-select:none;
+  background-blend-mode:normal;
+  box-shadow:var(--sh-2);
+  transition:box-shadow var(--d1) ease, opacity var(--d2) var(--ease), transform var(--d2) var(--ease);
+  animation:note-in var(--d2) var(--ease) both;
+}
+.note::after{ /* 纸感：右下角极淡压暗 */
+  content:"";position:absolute;inset:0;border-radius:2px;pointer-events:none;
+  background:linear-gradient(155deg,rgba(255,255,255,.42),rgba(255,255,255,0) 46%,rgba(28,30,36,.055));
+}
+@keyframes note-in{from{opacity:0;transform:scale(.94);}to{opacity:1;transform:none;}}
+.note:hover{box-shadow:var(--sh-3);}
+.note.is-sel{
+  box-shadow:0 0 0 calc(5px/var(--z)) var(--accent-ghost),
+             0 0 0 calc(1.8px/var(--z)) var(--accent),
+             var(--sh-3);
+}
+.note.is-target{
+  box-shadow:0 0 0 calc(6px/var(--z)) var(--accent-dim),
+             0 0 0 calc(2.4px/var(--z)) var(--accent),
+             var(--sh-3);
+}
+.note.is-drag{box-shadow:0 0 0 calc(1.8px/var(--z)) var(--accent), var(--sh-3);}
+.note-text{position:relative;outline:none;min-height:1.6em;}
+.note.editing{user-select:text;-webkit-user-select:text;cursor:text;}
+.note.editing .note-text{cursor:text;}
+.note-text:empty::before{content:"双击编辑";color:rgba(30,33,39,.3);}
+
+/* ---------- 选中框与手柄 ---------- */
+.frame{
+  position:absolute;pointer-events:none;
+  border:1.5px solid var(--accent);
+  border-radius:2px;
+  box-shadow:0 0 0 4px var(--accent-ghost);
+}
+.hnd{
+  position:absolute;width:11px;height:11px;pointer-events:auto;
+  background:#fff;border:1.5px solid var(--accent);border-radius:2px;
+  box-shadow:0 1px 3px rgba(30,33,39,.25);
+  transition:transform var(--d1) var(--ease);
+}
+.hnd:hover{transform:translate(-50%,-50%) scale(1.25);}
+.hnd[data-dir="nw"]{cursor:nwse-resize;}
+.hnd[data-dir="ne"]{cursor:nesw-resize;}
+.hnd[data-dir="sw"]{cursor:nesw-resize;}
+.hnd[data-dir="se"]{cursor:nwse-resize;}
+
+/* ---------- 浮动操作条 ---------- */
+.actbar{
+  position:absolute;pointer-events:auto;
+  display:flex;align-items:center;gap:6px;
+  padding:5px 7px;border-radius:999px;
+  background:var(--ink-900);color:#E8EAEE;
+  box-shadow:0 10px 26px -10px rgba(13,15,19,.55), 0 0 0 1px rgba(255,255,255,.07);
+  animation:bar-in var(--d2) var(--ease) both;
+}
+@keyframes bar-in{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}
+.actbar[hidden]{display:none;}
+.actbar .sw{width:18px;height:18px;}
+.actbar .sw[aria-pressed="true"]{box-shadow:0 0 0 2px var(--ink-900),0 0 0 3.5px #fff,0 0 0 1px rgba(0,0,0,.35) inset;}
+.act-rule{width:1px;height:18px;background:rgba(255,255,255,.16);margin:0 2px;}
+.act{width:26px;height:26px;border-radius:var(--r-xs);display:grid;place-items:center;color:#A8AFBB;transition:background var(--d1) ease,color var(--d1) ease;}
+.act:hover{background:rgba(255,255,255,.1);color:#fff;}
+.act.danger:hover{background:rgba(224,74,31,.9);color:#fff;}
+.act svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+
+/* ============================================================
+   底部：提示条 + 迷你地图
+   ============================================================ */
+.hintbar{
+  position:absolute;left:var(--s4);bottom:var(--s4);z-index:20;
+  display:flex;align-items:center;gap:8px;
+  padding:8px 13px;border-radius:999px;
+  background:rgba(255,255,255,.86);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  box-shadow:var(--sh-1), 0 0 0 1px var(--hairline);
+  font-size:11.5px;color:var(--ink-500);letter-spacing:.02em;
+  max-width:min(560px,60vw);
+  animation:rise var(--d3) var(--ease) both .42s;
+}
+.hintbar kbd{
+  font-family:var(--font-num);font-size:10.5px;
+  padding:2px 5px;border-radius:var(--r-xs);
+  background:var(--paper-2);color:var(--ink-700);
+  box-shadow:0 0 0 1px var(--hairline);
+}
+.hint-dot{width:5px;height:5px;border-radius:50%;background:var(--accent);flex:none;}
+
+.minimap{
+  position:absolute;right:var(--s4);bottom:var(--s4);z-index:20;
+  width:212px;border-radius:var(--r-md);overflow:hidden;
+  background:rgba(255,255,255,.9);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  box-shadow:var(--sh-2), 0 0 0 1px var(--hairline);
+  animation:rise var(--d3) var(--ease) both .52s;
+  user-select:none;
+}
+@keyframes rise{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:none;}}
+.mm-head{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:7px 8px 7px 11px;border-bottom:1px solid var(--hairline);
+  font-size:10.5px;letter-spacing:.1em;color:var(--ink-400);text-transform:uppercase;
+}
+.mm-fit{
+  font-size:11px;letter-spacing:.04em;color:var(--ink-500);
+  padding:4px 8px;border-radius:var(--r-xs);transition:background var(--d1) ease,color var(--d1) ease;
+}
+.mm-fit:hover{background:var(--paper-2);color:var(--ink-900);}
+#mm{display:block;width:212px;height:140px;cursor:crosshair;}
+
+/* ---------- 空状态 ---------- */
+.empty{
+  position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  z-index:15;pointer-events:none;text-align:center;
+  color:var(--ink-400);
+  transition:opacity var(--d2) ease;
+}
+.empty[hidden]{display:none;}
+.empty-mark{
+  width:54px;height:54px;margin:0 auto 14px;border-radius:14px;
+  border:1.5px dashed rgba(20,22,27,.2);
+  display:grid;place-items:center;
+}
+.empty-mark svg{width:22px;height:22px;stroke:var(--ink-300);fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
+.empty h2{margin:0 0 6px;font-size:17px;font-weight:600;color:var(--ink-700);letter-spacing:.01em;}
+.empty p{margin:0;font-size:12.5px;line-height:1.7;}
+
+/* ---------- 右键菜单 ---------- */
+.menu{
+  position:fixed;z-index:80;min-width:172px;
+  padding:5px;border-radius:var(--r-md);
+  background:var(--ink-860);color:#E8EAEE;
+  box-shadow:0 18px 44px -14px rgba(13,15,19,.6), 0 0 0 1px rgba(255,255,255,.09);
+  animation:menu-in 160ms var(--ease) both;
+}
+.menu[hidden]{display:none;}
+@keyframes menu-in{from{opacity:0;transform:scale(.96);}to{opacity:1;transform:none;}}
+.menu-item{
+  display:flex;align-items:center;gap:9px;width:100%;
+  padding:8px 10px;border-radius:var(--r-xs);
+  font-size:12.5px;color:#D5D9E0;text-align:left;
+  transition:background var(--d1) ease,color var(--d1) ease;
+}
+.menu-item:hover{background:rgba(255,255,255,.09);color:#fff;}
+.menu-item.danger:hover{background:rgba(224,74,31,.92);color:#fff;}
+.menu-item kbd{margin-left:auto;font-family:var(--font-num);font-size:10.5px;color:#7B8391;}
+.menu-item svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none;}
+.menu-sep{height:1px;background:rgba(255,255,255,.12);margin:4px 6px;}
+.menu-colors{display:flex;gap:7px;padding:8px 10px 6px;}
+.menu-colors .sw{width:19px;height:19px;}
+
+/* ---------- 入场序列 ---------- */
+.topbar .brand,.topbar .grp,.topbar .rule{animation:drop var(--d3) var(--ease) both;}
+.topbar .brand{animation-delay:40ms;}
+.topbar .grp:nth-of-type(1){animation-delay:100ms;}
+.topbar .grp:nth-of-type(2){animation-delay:150ms;}
+.topbar .grp:nth-of-type(3){animation-delay:195ms;}
+.topbar .grp:nth-of-type(4){animation-delay:240ms;}
+.topbar .grp:nth-of-type(5){animation-delay:285ms;}
+.topbar .grp:nth-of-type(6){animation-delay:330ms;}
+@keyframes drop{from{opacity:0;transform:translateY(-8px);}to{opacity:1;transform:none;}}
+
+/* ---------- 响应式 ---------- */
+@media (max-width:1180px){ .presence .stack{display:none;} }
+@media (max-width:1040px){
+  .brand-text{display:none;}
+  .brush-label{display:none;}
+  input[type=range]{width:56px;}
+}
+@media (max-width:900px){
+  .grp.history{display:none;}
+  .presence{display:none;}
+  .pal{min-width:0;}
+  .pal .sw:nth-child(n+5){display:none;}
+  .pal{min-width:112px;}
+}
+@media (max-width:720px){
+  .brush{display:none;}
+  .hintbar{display:none;}
+  .minimap{width:150px;}
+  #mm{width:150px;height:100px;}
+}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms !important;animation-delay:0ms !important;transition-duration:.01ms !important;}
+}
+</style>
+</head>
+<body>
+
+<!-- ===================== 顶栏 ===================== -->
+<header class="topbar" id="topbar">
+  <div class="brand">
+    <div class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M4 19c3.2-.6 5.4-2.4 6.6-5.4C12.2 9.8 15 6.2 20 5c.4 4.6-2.6 8.2-6.6 9.9-3 1.3-6 2.2-9.4 4.1z" fill="#fff" stroke="none"/></svg>
+    </div>
+    <div class="brand-text">
+      <span class="brand-name">Inkboard</span>
+      <span class="brand-sub">砚 · 协作白板</span>
+    </div>
+  </div>
+
+  <span class="rule"></span>
+
+  <!-- 工具 -->
+  <div class="grp" role="group" aria-label="工具">
+    <button class="tool" data-tool="select" aria-pressed="true" aria-label="选择工具">
+      <svg viewBox="0 0 24 24"><path d="M5 3.5l13.5 6.2-6 1.9-1.9 6z"/><path d="M18.5 17.5l-4 4"/></svg>
+      <span class="tip">选择 <b>V</b></span>
+    </button>
+    <button class="tool" data-tool="note" aria-pressed="false" aria-label="便签工具">
+      <svg viewBox="0 0 24 24"><path d="M4 4.5h16v11l-4.5 4H4z"/><path d="M20 15.5h-4.5v4"/></svg>
+      <span class="tip">便签 <b>N</b> · 双击空白也可新建</span>
+    </button>
+    <button class="tool" data-tool="pen" aria-pressed="false" aria-label="画笔工具">
+      <svg viewBox="0 0 24 24"><path d="M3.5 20.5c2.5-.4 4.6-1.7 5.9-4"/><path d="M9.4 16.5l9-9a2.1 2.1 0 013 3l-9 9z"/><path d="M15.4 7.5l1.7-1.7a2.1 2.1 0 013 3L18.4 10.5"/></svg>
+      <span class="tip">画笔 <b>P</b></span>
+    </button>
+    <button class="tool" data-tool="connector" aria-pressed="false" aria-label="连线工具">
+      <svg viewBox="0 0 24 24"><circle cx="5.5" cy="18" r="2.6"/><circle cx="18.5" cy="6" r="2.6"/><path d="M7.8 15.8L16.2 8.2"/></svg>
+      <span class="tip">连线 <b>L</b> · 从一张便签拖到另一张</span>
+    </button>
+    <button class="tool" data-tool="pan" aria-pressed="false" aria-label="平移工具">
+      <svg viewBox="0 0 24 24"><path d="M9 11V5.5a1.5 1.5 0 013 0V11"/><path d="M12 11V4.5a1.5 1.5 0 013 0V11"/><path d="M15 11v-.5a1.5 1.5 0 013 0V14a6 6 0 01-6 6h-1.6a5 5 0 01-3.7-1.6L5 16.2a1.6 1.6 0 012.3-2.2L9 15.4V11"/></svg>
+      <span class="tip">平移 <b>H</b> · 或按住空格 / 中键</span>
+    </button>
+  </div>
+
+  <span class="rule"></span>
+
+  <!-- 颜色（随工具切换：便签色 / 墨色） -->
+  <div class="pal" id="palNote" data-kind="note" role="group" aria-label="便签颜色">
+    <button class="sw" data-color="#FFE066" style="background:#FFE066" aria-pressed="true" aria-label="藤黄"></button>
+    <button class="sw" data-color="#B7E3A8" style="background:#B7E3A8" aria-pressed="false" aria-label="苔绿"></button>
+    <button class="sw" data-color="#A7CDF0" style="background:#A7CDF0" aria-pressed="false" aria-label="霁蓝"></button>
+    <button class="sw" data-color="#F9B8C4" style="background:#F9B8C4" aria-pressed="false" aria-label="藕粉"></button>
+    <button class="sw" data-color="#D5C2F2" style="background:#D5C2F2" aria-pressed="false" aria-label="紫藤"></button>
+    <button class="sw" data-color="#FFC38B" style="background:#FFC38B" aria-pressed="false" aria-label="橘瓤"></button>
+  </div>
+  <div class="pal" id="palInk" data-kind="ink" role="group" aria-label="墨色" hidden>
+    <button class="sw" data-color="#1E2127" style="background:#1E2127" aria-pressed="true" aria-label="石墨"></button>
+    <button class="sw" data-color="#E04A1F" style="background:#E04A1F" aria-pressed="false" aria-label="朱砂"></button>
+    <button class="sw" data-color="#2F5FD0" style="background:#2F5FD0" aria-pressed="false" aria-label="靛蓝"></button>
+    <button class="sw" data-color="#0E8A6A" style="background:#0E8A6A" aria-pressed="false" aria-label="松绿"></button>
+  </div>
+
+  <!-- 笔宽 -->
+  <div class="brush" id="brush" data-off="1">
+    <span class="brush-label">笔宽</span>
+    <span class="brush-dot"><i id="brushPrev" style="width:6px;height:6px"></i></span>
+    <input type="range" id="brushRange" min="1" max="26" step="1" value="4" aria-label="画笔粗细">
+  </div>
+
+  <span class="spacer"></span>
+
+  <!-- 历史 -->
+  <div class="grp history" role="group" aria-label="历史">
+    <button class="tool" id="undoBtn" aria-label="撤销" disabled>
+      <svg viewBox="0 0 24 24"><path d="M4 9h11a5 5 0 010 10h-6"/><path d="M7.5 5.5L4 9l3.5 3.5"/></svg>
+      <span class="tip">撤销 <b>⌘Z</b></span>
+    </button>
+    <button class="tool" id="redoBtn" aria-label="重做" disabled>
+      <svg viewBox="0 0 24 24"><path d="M20 9H9a5 5 0 000 10h6"/><path d="M16.5 5.5L20 9l-3.5 3.5"/></svg>
+      <span class="tip">重做 <b>⇧⌘Z</b></span>
+    </button>
+  </div>
+
+  <span class="rule"></span>
+
+  <!-- 协作者 -->
+  <div class="presence">
+    <div class="stack" aria-hidden="true">
+      <span style="background:var(--peer-a)">林</span>
+      <span style="background:var(--peer-b)">A</span>
+      <span style="background:var(--peer-c)">柯</span>
+    </div>
+    <button class="live" id="liveBtn" data-on="1" aria-pressed="true">
+      <i></i><span>3 人在线</span>
+    </button>
+  </div>
+
+  <span class="rule"></span>
+
+  <!-- 缩放 -->
+  <div class="grp zoom" role="group" aria-label="缩放">
+    <button class="tool" id="zoomOut" aria-label="缩小">
+      <svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg><span class="tip">缩小 <b>⌘−</b></span>
+    </button>
+    <span class="zoom-val" id="zoomVal">100%</span>
+    <button class="tool" id="zoomIn" aria-label="放大">
+      <svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg><span class="tip">放大 <b>⌘+</b></span>
+    </button>
+    <button class="tool" id="zoomFit" aria-label="适应画布">
+      <svg viewBox="0 0 24 24"><path d="M4 9V4h5"/><path d="M20 15v5h-5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/></svg>
+      <span class="tip">适应画布 <b>⇧1</b></span>
+    </button>
+  </div>
+</header>
+
+<!-- ===================== 舞台 ===================== -->
+<main class="stage" id="stage" data-tool="select">
+  <canvas id="scene"></canvas>
+  <div id="world"></div>
+  <div id="overlay">
+    <div class="frame" id="frame" hidden></div>
+    <div class="actbar" id="actbar" hidden>
+      <div class="act-swatches" id="actSw" style="display:flex;gap:6px"></div>
+      <span class="act-rule"></span>
+      <button class="act" data-act="duplicate" aria-label="复制" title="复制 ⌘D">
+        <svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 6.5V5a1 1 0 00-1-1H5a1 1 0 00-1 1v9a1 1 0 001 1h1.5"/></svg>
+      </button>
+      <button class="act danger" data-act="delete" aria-label="删除" title="删除 ⌫">
+        <svg viewBox="0 0 24 24"><path d="M4.5 6.5h15"/><path d="M9.5 6.5V4.8a1 1 0 011-1h3a1 1 0 011 1v1.7"/><path d="M6.5 6.5l.8 12a1.5 1.5 0 001.5 1.4h6.4a1.5 1.5 0 001.5-1.4l.8-12"/></svg>
+      </button>
+    </div>
+  </div>
+</main>
+
+<div class="empty" id="empty" hidden>
+  <div class="empty-mark"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></div>
+  <h2>画布还是空的</h2>
+  <p>按 <b>N</b> 选便签工具，点一下画布就能落下第一张<br>也可以直接双击空白处</p>
+</div>
+
+<div class="hintbar" id="hintbar"><span class="hint-dot"></span><span id="hintText"></span></div>
+
+<div class="minimap">
+  <div class="mm-head"><span>总览</span><button class="mm-fit" id="mmFit">适应</button></div>
+  <canvas id="mm"></canvas>
+</div>
+
+<div class="menu" id="menu" hidden></div>
+
+<script>
+(function(){
+'use strict';
+
+/* ============================================================
+   0. 基础
+   ============================================================ */
+const $  = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => Array.prototype.slice.call((r || document).querySelectorAll(s));
+const REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const uid = (() => { let i = 0; return () => ++i; })();
+
+const stage   = $('#stage');
+const scene   = $('#scene');
+const ctx     = scene.getContext('2d');
+const world   = $('#world');
+const overlay = $('#overlay');
+const frameEl = $('#frame');
+const actbar  = $('#actbar');
+const actSw   = $('#actSw');
+const menu    = $('#menu');
+const mm      = $('#mm');
+const mmCtx   = mm.getContext('2d');
+const zoomVal = $('#zoomVal');
+const hintText= $('#hintText');
+const emptyEl = $('#empty');
+
+const MINW = 110, MINH = 74;          // 便签最小尺寸（世界坐标）
+const NOTE_W = 200, NOTE_H = 132;     // 新建便签默认尺寸
+const ZMIN = 0.15, ZMAX = 5;
+const GRID = 24;                      // 细网格步长（世界坐标）
+
+/* ============================================================
+   1. 状态
+   ============================================================ */
+const S = {
+  tool: 'select',
+  noteColor: '#FFE066',
+  inkColor: '#1E2127',
+  inkWidth: 4,
+  view: { x: 0, y: 0, k: 1 },
+  notes: [],      // {id,x,y,w,h,color,text}
+  strokes: [],    // {id,color,w,pts:[{x,y}]}
+  conns: [],      // {id,a,b}
+  sel: new Set(),
+  liveCursors: true
+};
+
+const els = new Map();       // noteId -> element
+let hist = [], future = [];
+let W = 0, H = 0, DPR = 1;
+let dirty = true;
+
+/* 协作者光标（模拟） */
+const peers = [
+  { name: '林川', color: '#2F5FD0', wx: 0, wy: 0, tx: 0, ty: 0, wait: 0 },
+  { name: 'Ava',  color: '#0E8A6A', wx: 0, wy: 0, tx: 0, ty: 0, wait: 0 }
+];
+
+/* ============================================================
+   2. 坐标换算
+   ============================================================ */
+const s2w = (sx, sy) => ({ x: (sx - S.view.x) / S.view.k, y: (sy - S.view.y) / S.view.k });
+const w2s = (wx, wy) => ({ x: wx * S.view.k + S.view.x, y: wy * S.view.k + S.view.y });
+const localPt = e => {
+  const r = stage.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+};
+const byId = id => S.notes.find(n => n.id === id);
+const boxOf = n => ({ x: n.x, y: n.y, w: n.w, h: n.h });
+const centerOf = b => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
+
+/** 从矩形中心朝 target 方向求边界交点 */
+function edgePoint(b, target) {
+  const c = centerOf(b);
+  const dx = target.x - c.x, dy = target.y - c.y;
+  if (!dx && !dy) return c;
+  const sx = dx ? (b.w / 2) / Math.abs(dx) : Infinity;
+  const sy = dy ? (b.h / 2) / Math.abs(dy) : Infinity;
+  const s = Math.min(sx, sy);
+  return { x: c.x + dx * s, y: c.y + dy * s };
+}
+
+/* ============================================================
+   3. 历史（快照式撤销 / 重做）
+   ============================================================ */
+function snapshot() {
+  return JSON.stringify({ n: S.notes, s: S.strokes, c: S.conns });
+}
+function pushHist(prev) {
+  hist.push(prev);
+  if (hist.length > 100) hist.shift();
+  future.length = 0;
+  syncHistUI();
+}
+function restore(json) {
+  const d = JSON.parse(json);
+  S.notes = d.n; S.strokes = d.s; S.conns = d.c;
+  S.sel.clear();
+  rebuildDom();
+  syncHistUI();
+  invalidate();
+}
+function undo() {
+  if (!hist.length) return;
+  const cur = snapshot();
+  future.push(cur);
+  restore(hist.pop());
+  syncHistUI();
+}
+function redo() {
+  if (!future.length) return;
+  const cur = snapshot();
+  hist.push(cur);
+  restore(future.pop());
+  syncHistUI();
+}
+function syncHistUI() {
+  $('#undoBtn').disabled = !hist.length;
+  $('#redoBtn').disabled = !future.length;
+}
+
+/* ============================================================
+   4. 便签 DOM
+   ============================================================ */
+function createNoteEl(n) {
+  const el = document.createElement('div');
+  el.className = 'note';
+  el.dataset.id = n.id;
+  el.innerHTML = '<div class="note-text" spellcheck="false"></div>';
+
+  el.addEventListener('pointerdown', e => {
+    if (e.button === 2) return;                       // 右键交给菜单
+    e.stopPropagation();
+    if (el.classList.contains('editing')) return;     // 编辑中不拖动
+    if (S.tool === 'pen' || S.tool === 'connector') return;
+
+    if (e.shiftKey) {
+      if (S.sel.has(n.id)) S.sel.delete(n.id); else S.sel.add(n.id);
+    } else if (!S.sel.has(n.id)) {
+      S.sel.clear(); S.sel.add(n.id);
+    }
+    paintNotes(); updateSelUI();
+    beginNoteDrag(e);
+  });
+
+  el.addEventListener('dblclick', e => {
+    e.stopPropagation();
+    if (S.tool === 'pen' || S.tool === 'connector') return;
+    startEditing(n);
+  });
+
+  el.addEventListener('contextmenu', e => {
+    e.preventDefault(); e.stopPropagation();
+    if (!S.sel.has(n.id)) { S.sel.clear(); S.sel.add(n.id); paintNotes(); updateSelUI(); }
+    showMenu(e.clientX, e.clientY, 'note');
+  });
+
+  return el;
+}
+
+function startEditing(n) {
+  const el = els.get(n.id); if (!el) return;
+  S.sel.clear(); S.sel.add(n.id); paintNotes(); updateSelUI();
+  const t = $('.note-text', el);
+  el.classList.add('editing');
+  t.setAttribute('contenteditable', 'true');
+  t.focus();
+  const r = document.createRange();
+  r.selectNodeContents(t); r.collapse(false);
+  const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  const before = n.text;
+  const commit = () => {
+    t.removeAttribute('contenteditable');
+    el.classList.remove('editing');
+    const now = t.textContent;
+    if (now !== before) {
+      const prev = snapshot();
+      n.text = now;
+      pushHist(prev);
+    }
+    t.textContent = n.text;
+    invalidate();
+  };
+  t.addEventListener('blur', commit, { once: true });
+  t.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape') { ev.preventDefault(); t.blur(); }
+    ev.stopPropagation();
+  });
+}
+
+function paintNotes() {
+  const seen = new Set();
+  for (const n of S.notes) {
+    seen.add(n.id);
+    let el = els.get(n.id);
+    if (!el) { el = createNoteEl(n); els.set(n.id, el); world.appendChild(el); }
+    layoutNote(el, n);
+  }
+  els.forEach((el, id) => { if (!seen.has(id)) { el.remove(); els.delete(id); } });
+}
+
+function layoutNote(el, n) {
+  el.style.left = n.x + 'px';
+  el.style.top = n.y + 'px';
+  el.style.width = n.w + 'px';
+  el.style.minHeight = n.h + 'px';
+  el.style.background = n.color;
+  const t = $('.note-text', el);
+  if (!el.classList.contains('editing') && t.textContent !== n.text) t.textContent = n.text;
+  el.classList.toggle('is-sel', S.sel.has(n.id));
+}
+
+function rebuildDom() {
+  els.forEach(el => el.remove());
+  els.clear();
+  paintNotes();
+  updateSelUI();
+}
+
+/* ============================================================
+   5. 工具与选中态 UI
+   ============================================================ */
+const HINTS = {
+  select:    '拖拽框选 · 双击空白新建便签 · <kbd>空格</kbd> 或中键平移 · 滚轮缩放',
+  note:      '点击画布落下一张便签 · 拖住便签可移动 · 双击编辑文字',
+  pen:       '按住自由绘制，松手成笔 · 顶栏可调粗细与墨色',
+  connector: '从一张便签按下，拖到另一张松手即可连线',
+  pan:       '按住拖拽平移画布 · 任意工具下按住 <kbd>空格</kbd> 也能平移'
+};
+
+function setTool(t) {
+  S.tool = t;
+  stage.dataset.tool = t;
+  $$('.tool[data-tool]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.tool === t)));
+  const ink = (t === 'pen' || t === 'connector');
+  $('#palNote').hidden = ink;
+  $('#palInk').hidden = !ink;
+  $('#brush').dataset.off = (t === 'pen') ? '0' : '1';
+  $('#brushRange').disabled = (t !== 'pen');
+  if (t !== 'select') { /* 切换到绘制类工具时保留选中，但隐藏手柄 */ }
+  hintText.innerHTML = HINTS[t];
+  updateSelUI();
+}
+
+function unionBox(boxes) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const b of boxes) {
+    x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
+    x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h);
+  }
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+let handles = [];
+function ensureHandles() {
+  if (handles.length) return handles;
+  ['nw', 'ne', 'sw', 'se'].forEach(dir => {
+    const h = document.createElement('div');
+    h.className = 'hnd'; h.dataset.dir = dir; h.hidden = true;
+    h.style.transform = 'translate(-50%,-50%)';
+    h.addEventListener('pointerdown', e => { e.stopPropagation(); beginResize(e, dir); });
+    overlay.appendChild(h);
+    handles.push(h);
+  });
+  return handles;
+}
+
+function updateSelUI() {
+  ensureHandles();
+  const ids = [...S.sel].filter(byId);
+  S.sel = new Set(ids);
+
+  if (!ids.length || S.tool === 'pen' || S.tool === 'connector') {
+    frameEl.hidden = true; actbar.hidden = true;
+    handles.forEach(h => h.hidden = true);
+    return;
+  }
+
+  const boxes = ids.map(id => boxOf(byId(id)));
+  const b = unionBox(boxes);
+  const tl = w2s(b.x, b.y), br = w2s(b.x + b.w, b.y + b.h);
+  const L = tl.x, T = tl.y, RW = br.x - tl.x, RH = br.y - tl.y;
+
+  const single = ids.length === 1;
+  frameEl.hidden = single;
+  if (!single) {
+    frameEl.style.left = L + 'px'; frameEl.style.top = T + 'px';
+    frameEl.style.width = RW + 'px'; frameEl.style.height = RH + 'px';
+  }
+  handles.forEach(h => {
+    h.hidden = !single;
+    if (!single) return;
+    const d = h.dataset.dir;
+    h.style.left = (L + (d.includes('e') ? RW : 0)) + 'px';
+    h.style.top  = (T + (d.includes('s') ? RH : 0)) + 'px';
+  });
+
+  // 浮动操作条
+  actbar.hidden = false;
+  actbar.style.left = '0px'; actbar.style.top = '0px';
+  const bw = actbar.offsetWidth, bh = actbar.offsetHeight;
+  let ax = L + RW / 2 - bw / 2;
+  let ay = T - bh - 12;
+  if (ay < 8) ay = Math.min(T + RH + 12, H - bh - 8);
+  actbar.style.left = clamp(ax, 8, Math.max(8, W - bw - 8)) + 'px';
+  actbar.style.top = clamp(ay, 8, Math.max(8, H - bh - 8)) + 'px';
+
+  // 同步操作条色板选中态
+  $$('.sw', actSw).forEach(s => s.setAttribute('aria-pressed', String(s.dataset.color === S.noteColor)));
+}
+
+/* ============================================================
+   6. 交互：拖拽 / 缩放 / 框选
+   ============================================================ */
+function beginDrag(e, onMove, onEnd) {
+  const sx = e.clientX, sy = e.clientY;
+  const move = ev => onMove(ev.clientX - sx, ev.clientY - sy, ev);
+  const up = ev => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    window.removeEventListener('pointercancel', up);
+    if (onEnd) onEnd(ev);
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+  window.addEventListener('pointercancel', up);
+}
+
+function beginNoteDrag(e) {
+  const prev = snapshot();
+  const ids = [...S.sel];
+  const origin = new Map(ids.map(id => { const n = byId(id); return [id, { x: n.x, y: n.y }]; }));
+  let moved = false;
+  ids.forEach(id => { const el = els.get(id); if (el) el.classList.add('is-drag'); });
+
+  beginDrag(e, (dx, dy) => {
+    if (!moved && Math.abs(dx) + Math.abs(dy) > 2) moved = true;
+    if (!moved) return;
+    const kx = dx / S.view.k, ky = dy / S.view.k;
+    for (const id of ids) {
+      const n = byId(id), o = origin.get(id);
+      n.x = o.x + kx; n.y = o.y + ky;
+      const el = els.get(id); if (el) { el.style.left = n.x + 'px'; el.style.top = n.y + 'px'; }
+    }
+    updateSelUI(); invalidate();
+  }, () => {
+    ids.forEach(id => { const el = els.get(id); if (el) el.classList.remove('is-drag'); });
+    if (moved) pushHist(prev);
+    invalidate();
+  });
+}
+
+function beginResize(e, dir) {
+  const id = [...S.sel][0]; const n = byId(id); if (!n) return;
+  const prev = snapshot();
+  const o = { x: n.x, y: n.y, w: n.w, h: n.h };
+  let moved = false;
+  beginDrag(e, (dx, dy) => {
+    if (!moved && Math.abs(dx) + Math.abs(dy) > 2) moved = true;
+    if (!moved) return;
+    const kx = dx / S.view.k, ky = dy / S.view.k;
+    let { x, y, w, h } = o;
+    if (dir.includes('e')) w = o.w + kx;
+    if (dir.includes('s')) h = o.h + ky;
+    if (dir.includes('w')) { w = o.w - kx; x = o.x + kx; }
+    if (dir.includes('n')) { h = o.h - ky; y = o.y + ky; }
+    if (w < MINW) { if (dir.includes('w')) x = o.x + o.w - MINW; w = MINW; }
+    if (h < MINH) { if (dir.includes('n')) y = o.y + o.h - MINH; h = MINH; }
+    n.x = x; n.y = y; n.w = w; n.h = h;
+    layoutNote(els.get(id), n);
+    updateSelUI(); invalidate();
+  }, () => { if (moved) pushHist(prev); invalidate(); });
+}
+
+let marquee = null;
+function drawMarquee() {
+  if (!marquee) return;
+  const { x0, y0, x1, y1 } = marquee;
+  ctx.save();
+  ctx.fillStyle = 'rgba(224,74,31,.07)';
+  ctx.strokeStyle = 'rgba(224,74,31,.75)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([5, 4]);
+  ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  ctx.strokeRect(x0 + .5, y0 + .5, x1 - x0, y1 - y0);
+  ctx.restore();
+}
+
+let tempConn = null;
+
+/* 舞台指针事件 */
+stage.addEventListener('pointerdown', e => {
+  hideMenu();
+  if (e.button === 2) return;
+  const p = localPt(e);
+  const w = s2w(p.x, p.y);
+  const isPanKey = e.button === 1 || spaceDown || S.tool === 'pan';
+
+  if (isPanKey) {
+    stage.classList.add('is-panning');
+    const ox = S.view.x, oy = S.view.y;
+    beginDrag(e, (dx, dy) => {
+      S.view.x = ox + dx; S.view.y = oy + dy;
+      applyView();
+    }, () => { stage.classList.remove('is-panning'); });
+    return;
+  }
+
+  if (S.tool === 'pen') {
+    const prev = snapshot();
+    const st = { id: uid(), color: S.inkColor, w: S.inkWidth, pts: [{ x: w.x, y: w.y }] };
+    S.strokes.push(st);
+    const minD = 1.6 / S.view.k;
+    beginDrag(e, (dx, dy, ev) => {
+      const q = localPt(ev); const wp = s2w(q.x, q.y);
+      const last = st.pts[st.pts.length - 1];
+      if (Math.hypot(wp.x - last.x, wp.y - last.y) < minD) return;
+      st.pts.push({ x: wp.x, y: wp.y });
+      invalidate();
+    }, () => {
+      if (st.pts.length < 2) S.strokes.pop(); else pushHist(prev);
+      invalidate();
+    });
+    return;
+  }
+
+  if (S.tool === 'note') {
+    addNote(w.x - NOTE_W / 2, w.y - NOTE_H / 2);
+    return;
+  }
+
+  if (S.tool === 'connector') {
+    const hit = hitNote(w.x, w.y);
+    if (!hit) { S.sel.clear(); paintNotes(); updateSelUI(); return; }
+    tempConn = { from: hit.id, x: p.x, y: p.y };
+    beginDrag(e, (dx, dy, ev) => {
+      const q = localPt(ev); tempConn.x = q.x; tempConn.y = q.y; invalidate();
+    }, ev => {
+      const q = localPt(ev); const wp = s2w(q.x, q.y);
+      const to = hitNote(wp.x, wp.y);
+      if (to && to.id !== tempConn.from) {
+        const prev = snapshot();
+        const exists = S.conns.some(c => (c.a === tempConn.from && c.b === to.id) || (c.a === to.id && c.b === tempConn.from));
+        if (!exists) { S.conns.push({ id: uid(), a: tempConn.from, b: to.id }); pushHist(prev); }
+      }
+      tempConn = null; invalidate();
+    });
+    return;
+  }
+
+  // select
+  const ox = p.x, oy = p.y;
+  const additive = e.shiftKey;
+  if (!additive) { S.sel.clear(); paintNotes(); updateSelUI(); }
+  const baseSel = new Set(S.sel);
+  marquee = { x0: ox, y0: oy, x1: ox, y1: oy };
+  beginDrag(e, (dx, dy, ev) => {
+    const q = localPt(ev);
+    marquee = { x0: Math.min(ox, q.x), y0: Math.min(oy, q.y), x1: Math.max(ox, q.x), y1: Math.max(oy, q.y) };
+    const a = s2w(marquee.x0, marquee.y0), b = s2w(marquee.x1, marquee.y1);
+    const r = { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y };
+    S.sel = new Set(baseSel);
+    for (const n of S.notes) if (intersect(boxOf(n), r)) S.sel.add(n.id);
+    paintNotes(); updateSelUI(); invalidate();
+  }, () => {
+    const tiny = Math.abs(marquee.x1 - marquee.x0) < 3 && Math.abs(marquee.y1 - marquee.y0) < 3;
+    marquee = null; invalidate();
+    return tiny;
+  });
+});
+
+stage.addEventListener('dblclick', e => {
+  if (S.tool === 'pen' || S.tool === 'connector') return;
+  const p = localPt(e); const w = s2w(p.x, p.y);
+  if (hitNote(w.x, w.y)) return;
+  addNote(w.x - NOTE_W / 2, w.y - NOTE_H / 2);
+});
+
+stage.addEventListener('pointermove', e => {
+  if (S.tool !== 'connector' || tempConn) return;
+  const p = localPt(e); const w = s2w(p.x, p.y);
+  const hit = hitNote(w.x, w.y);
+  els.forEach((el, id) => el.classList.toggle('is-target', !!hit && hit.id === id));
+});
+
+stage.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  const p = localPt(e); const w = s2w(p.x, p.y);
+  showMenu(e.clientX, e.clientY, hitNote(w.x, w.y) ? 'note' : 'board', w);
+});
+
+/* 滚轮缩放（以光标为锚点） */
+stage.addEventListener('wheel', e => {
+  e.preventDefault();
+  const p = localPt(e);
+  const factor = Math.exp(-e.deltaY * (e.ctrlKey ? 0.008 : 0.0016));
+  setZoom(S.view.k * factor, p.x, p.y);
+}, { passive: false });
+
+function setZoom(k, ax, ay) {
+  const nk = clamp(k, ZMIN, ZMAX);
+  if (ax === undefined) { ax = W / 2; ay = H / 2; }
+  const w = s2w(ax, ay);
+  S.view.k = nk;
+  S.view.x = ax - w.x * nk;
+  S.view.y = ay - w.y * nk;
+  applyView();
+}
+
+function applyView() {
+  world.style.transform = 'translate(' + S.view.x + 'px,' + S.view.y + 'px) scale(' + S.view.k + ')';
+  world.style.setProperty('--z', String(S.view.k));
+  zoomVal.textContent = Math.round(S.view.k * 100) + '%';
+  updateSelUI();
+  invalidate();
+}
+
+function hitNote(wx, wy) {
+  for (let i = S.notes.length - 1; i >= 0; i--) {
+    const n = S.notes[i];
+    if (wx >= n.x && wx <= n.x + n.w && wy >= n.y && wy <= n.y + n.h) return n;
+  }
+  return null;
+}
+function intersect(a, b) {
+  return !(a.x + a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y);
+}
+
+/* ============================================================
+   7. 增删改
+   ============================================================ */
+function addNote(x, y, color, text) {
+  const prev = snapshot();
+  const n = { id: uid(), x: snap(x), y: snap(y), w: NOTE_W, h: NOTE_H, color: color || S.noteColor, text: text || '' };
+  S.notes.push(n);
+  S.sel.clear(); S.sel.add(n.id);
+  paintNotes(); updateSelUI(); pushHist(prev); invalidate();
+  return n;
+}
+const snap = v => Math.round(v / GRID) * GRID;
+
+function deleteSelection() {
+  if (!S.sel.size) return;
+  const prev = snapshot();
+  const ids = new Set(S.sel);
+  S.notes = S.notes.filter(n => !ids.has(n.id));
+  S.conns = S.conns.filter(c => !ids.has(c.a) && !ids.has(c.b));
+  S.sel.clear();
+  paintNotes(); updateSelUI(); pushHist(prev); invalidate();
+}
+
+function duplicateSelection() {
+  if (!S.sel.size) return;
+  const prev = snapshot();
+  const copies = [];
+  for (const id of S.sel) {
+    const n = byId(id); if (!n) continue;
+    copies.push({ id: uid(), x: n.x + 24, y: n.y + 24, w: n.w, h: n.h, color: n.color, text: n.text });
+  }
+  S.notes = S.notes.concat(copies);
+  S.sel = new Set(copies.map(c => c.id));
+  paintNotes(); updateSelUI(); pushHist(prev); invalidate();
+}
+
+function setNoteColor(color) {
+  S.noteColor = color;
+  if (!S.sel.size) { syncPalettes(); return; }
+  const prev = snapshot();
+  for (const id of S.sel) { const n = byId(id); if (n) n.color = color; }
+  paintNotes(); pushHist(prev); syncPalettes(); invalidate();
+}
+
+function syncPalettes() {
+  $$('#palNote .sw').forEach(s => s.setAttribute('aria-pressed', String(s.dataset.color === S.noteColor)));
+  $$('#palInk .sw').forEach(s => s.setAttribute('aria-pressed', String(s.dataset.color === S.inkColor)));
+  $$('.sw', actSw).forEach(s => s.setAttribute('aria-pressed', String(s.dataset.color === S.noteColor)));
+}
+
+/* ============================================================
+   8. 右键菜单
+   ============================================================ */
+const ICON = {
+  edit: '<svg viewBox="0 0 24 24"><path d="M4 20h4l10-10-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>',
+  copy: '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 6.5V5a1 1 0 00-1-1H5a1 1 0 00-1 1v9a1 1 0 001 1h1.5"/></svg>',
+  del:  '<svg viewBox="0 0 24 24"><path d="M4.5 6.5h15"/><path d="M9.5 6.5V4.8a1 1 0 011-1h3a1 1 0 011 1v1.7"/><path d="M6.5 6.5l.8 12a1.5 1.5 0 001.5 1.4h6.4a1.5 1.5 0 001.5-1.4l.8-12"/></svg>',
+  add:  '<svg viewBox="0 0 24 24"><path d="M4 4.5h16v11l-4.5 4H4z"/><path d="M20 15.5h-4.5v4"/></svg>',
+  all:  '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 12h8"/></svg>',
+  fit:  '<svg viewBox="0 0 24 24"><path d="M4 9V4h5"/><path d="M20 15v5h-5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/></svg>'
+};
+
+function showMenu(cx, cy, kind, wp) {
+  let html = '';
+  if (kind === 'note') {
+    html += '<div class="menu-colors">' + ['#FFE066', '#B7E3A8', '#A7CDF0', '#F9B8C4', '#D5C2F2', '#FFC38B']
+      .map(c => '<button class="sw" data-mcolor="' + c + '" style="background:' + c + '" aria-label="' + c + '"></button>').join('') + '</div>';
+    html += '<div class="menu-sep"></div>';
+    html += item('edit', '编辑文字', '');
+    html += item('copy', '复制便签', '⌘D');
+    html += '<div class="menu-sep"></div>';
+    html += item('del', '删除', '⌫', true);
+  } else {
+    html += item('add', '在此新建便签', 'N');
+    html += item('all', '全选便签', '⌘A');
+    html += item('fit', '适应画布', '⇧1');
+  }
+  menu.innerHTML = html;
+  menu.hidden = false;
+  const r = menu.getBoundingClientRect();
+  menu.style.left = clamp(cx, 8, window.innerWidth - r.width - 8) + 'px';
+  menu.style.top = clamp(cy, 8, window.innerHeight - r.height - 8) + 'px';
+  menu._wp = wp || null;
+}
+function item(act, label, key, danger) {
+  return '<button class="menu-item' + (danger ? ' danger' : '') + '" data-mact="' + act + '">' +
+    (ICON[act] || '') + '<span>' + label + '</span>' + (key ? '<kbd>' + key + '</kbd>' : '') + '</button>';
+}
+function hideMenu() { menu.hidden = true; }
+
+menu.addEventListener('pointerdown', e => e.stopPropagation());
+menu.addEventListener('click', e => {
+  const sw = e.target.closest('[data-mcolor]');
+  if (sw) { setNoteColor(sw.dataset.mcolor); hideMenu(); return; }
+  const b = e.target.closest('[data-mact]');
+  if (!b) return;
+  const act = b.dataset.mact;
+  hideMenu();
+  if (act === 'edit') { const id = [...S.sel][0]; const n = byId(id); if (n) startEditing(n); }
+  else if (act === 'copy') duplicateSelection();
+  else if (act === 'del') deleteSelection();
+  else if (act === 'add') { const w = menu._wp || s2w(W / 2, H / 2); addNote(w.x - NOTE_W / 2, w.y - NOTE_H / 2); }
+  else if (act === 'all') { S.sel = new Set(S.notes.map(n => n.id)); paintNotes(); updateSelUI(); invalidate(); }
+  else if (act === 'fit') fitToContent();
+});
+/* 捕获阶段关闭菜单：便签会阻止冒泡，捕获能保证菜单照样收起 */
+window.addEventListener('pointerdown', e => { if (!menu.contains(e.target)) hideMenu(); }, true);
+window.addEventListener('blur', hideMenu);
+
+/* ============================================================
+   9. 渲染
+   ============================================================ */
+function invalidate() { dirty = true; }
+
+function drawGrid() {
+  const k = S.view.k;
+  let minor = GRID;
+  while (minor * k < 9) minor *= 4;      // 缩得太小时抽稀，避免糊成一片
+  const major = minor * 5;
+
+  const paint = (step, color) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    let i0 = Math.floor(-S.view.x / (step * k)) - 1;
+    let i1 = Math.ceil((W - S.view.x) / (step * k)) + 1;
+    for (let i = i0; i <= i1; i++) {
+      const sx = Math.round(i * step * k + S.view.x) + 0.5;
+      ctx.moveTo(sx, 0); ctx.lineTo(sx, H);
+    }
+    let j0 = Math.floor(-S.view.y / (step * k)) - 1;
+    let j1 = Math.ceil((H - S.view.y) / (step * k)) + 1;
+    for (let j = j0; j <= j1; j++) {
+      const sy = Math.round(j * step * k + S.view.y) + 0.5;
+      ctx.moveTo(0, sy); ctx.lineTo(W, sy);
+    }
+    ctx.stroke();
+  };
+  paint(minor, 'rgba(20,22,27,.055)');
+  paint(major, 'rgba(20,22,27,.105)');
+}
+
+function drawStrokes() {
+  for (const s of S.strokes) {
+    const p = s.pts;
+    ctx.strokeStyle = s.color; ctx.fillStyle = s.color;
+    ctx.lineWidth = s.w; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    if (p.length === 1) {
+      ctx.beginPath(); ctx.arc(p[0].x, p[0].y, s.w / 2, 0, Math.PI * 2); ctx.fill(); continue;
+    }
+    ctx.beginPath();
+    ctx.moveTo(p[0].x, p[0].y);
+    if (p.length === 2) {
+      ctx.lineTo(p[1].x, p[1].y);
+    } else {
+      for (let i = 1; i < p.length - 1; i++) {
+        const mx = (p[i].x + p[i + 1].x) / 2, my = (p[i].y + p[i + 1].y) / 2;
+        ctx.quadraticCurveTo(p[i].x, p[i].y, mx, my);
+      }
+      const last = p[p.length - 1];
+      ctx.lineTo(last.x, last.y);
+    }
+    ctx.stroke();
+  }
+}
+
+/** 连线在屏幕空间绘制：线宽与箭头尺寸恒定，不随缩放变形 */
+function drawConns() {
+  for (const c of S.conns) {
+    const A = byId(c.a), B = byId(c.b);
+    if (!A || !B) continue;
+    const ba = boxOf(A), bb = boxOf(B);
+    const pa = edgePoint(ba, centerOf(bb)), pb = edgePoint(bb, centerOf(ba));
+    const sa = w2s(pa.x, pa.y), sb = w2s(pb.x, pb.y);
+    const ang = Math.atan2(sb.y - sa.y, sb.x - sa.x);
+    const tipX = sb.x, tipY = sb.y;
+    const bx = tipX - Math.cos(ang) * 9, by = tipY - Math.sin(ang) * 9;
+    const px = -Math.sin(ang), py = Math.cos(ang);
+
+    ctx.lineCap = 'round';
+    // 白色描边提升可读性
+    ctx.strokeStyle = 'rgba(250,250,249,.9)'; ctx.lineWidth = 4.5;
+    ctx.beginPath(); ctx.moveTo(sa.x, sa.y); ctx.lineTo(bx, by); ctx.stroke();
+    ctx.strokeStyle = '#39404E'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(sa.x, sa.y); ctx.lineTo(bx, by); ctx.stroke();
+    ctx.fillStyle = '#39404E';
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(bx + px * 5.2, by + py * 5.2);
+    ctx.lineTo(bx - px * 5.2, by - py * 5.2);
+    ctx.closePath(); ctx.fill();
+  }
+}
+
+function drawTempConn() {
+  if (!tempConn) return;
+  const n = byId(tempConn.from); if (!n) return;
+  const sa = w2s(n.x + n.w / 2, n.y + n.h / 2);
+  ctx.save();
+  ctx.strokeStyle = '#E04A1F'; ctx.lineWidth = 2;
+  ctx.setLineDash([6, 5]); ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(sa.x, sa.y); ctx.lineTo(tempConn.x, tempConn.y); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#E04A1F';
+  ctx.beginPath(); ctx.arc(tempConn.x, tempConn.y, 3.5, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+/* 协作者光标 */
+const PEER_FONT = '600 10.5px ' + getComputedStyle(document.body).fontFamily;
+function stepPeers() {
+  const tl = s2w(0, 0), br = s2w(W, H);
+  for (const p of peers) {
+    if (p.wait <= 0) {
+      p.tx = tl.x + Math.random() * (br.x - tl.x);
+      p.ty = tl.y + Math.random() * (br.y - tl.y);
+      p.wait = 90 + Math.random() * 150;
+    }
+    p.wait--;
+    p.wx += (p.tx - p.wx) * 0.012;
+    p.wy += (p.ty - p.wy) * 0.012;
+  }
+}
+function drawPeers() {
+  ctx.save();
+  ctx.font = PEER_FONT;
+  ctx.textBaseline = 'middle';
+  for (const p of peers) {
+    const s = w2s(p.wx, p.wy);
+    if (s.x < -60 || s.y < -60 || s.x > W + 60 || s.y > H + 60) continue;
+    ctx.translate(s.x, s.y);
+    // 指针
+    ctx.beginPath();
+    ctx.moveTo(0, 0); ctx.lineTo(0, 17.5); ctx.lineTo(4.7, 13.1);
+    ctx.lineTo(7.6, 19); ctx.lineTo(10.6, 17.6); ctx.lineTo(7.6, 11.8); ctx.lineTo(14, 11.2);
+    ctx.closePath();
+    ctx.fillStyle = '#fff'; ctx.strokeStyle = p.color; ctx.lineWidth = 1.6;
+    ctx.fill(); ctx.stroke();
+    // 名牌
+    const tw = ctx.measureText(p.name).width;
+    const bw = tw + 14, bh = 18;
+    ctx.beginPath();
+    const r = 5, x = 13, y = 15;
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + bw, y, x + bw, y + bh, r);
+    ctx.arcTo(x + bw, y + bh, x, y + bh, r);
+    ctx.arcTo(x, y + bh, x, y, r);
+    ctx.arcTo(x, y, x + bw, y, r);
+    ctx.closePath();
+    ctx.fillStyle = p.color; ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.fillText(p.name, x + 7, y + bh / 2 + .5);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  ctx.restore();
+}
+
+function render() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#FAFAF9';
+  ctx.fillRect(0, 0, W, H);
+
+  drawGrid();
+
+  ctx.save();
+  ctx.translate(S.view.x, S.view.y);
+  ctx.scale(S.view.k, S.view.k);
+  drawStrokes();
+  ctx.restore();
+
+  drawConns();
+  drawTempConn();
+  drawMarquee();
+  if (S.liveCursors) drawPeers();
+
+  drawMinimap();
+  emptyEl.hidden = (S.notes.length + S.strokes.length) > 0;
+}
+
+/* ---------- 迷你地图 ---------- */
+let MMW = 212, MMH = 140;                 // 随容器的窄屏尺寸动态更新
+let mmBox = null, mmFitK = 1, mmOff = { x: 0, y: 0 };
+
+function contentBox() {
+  let b = null;
+  const grow = r => {
+    if (!b) b = { x: r.x, y: r.y, w: r.w, h: r.h };
+    else {
+      const x0 = Math.min(b.x, r.x), y0 = Math.min(b.y, r.y);
+      const x1 = Math.max(b.x + b.w, r.x + r.w), y1 = Math.max(b.y + b.h, r.y + r.h);
+      b = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    }
+  };
+  for (const n of S.notes) grow(boxOf(n));
+  for (const s of S.strokes) {
+    for (const p of s.pts) grow({ x: p.x - s.w, y: p.y - s.w, w: s.w * 2, h: s.w * 2 });
+  }
+  return b;
+}
+
+function drawMinimap() {
+  const vp = s2w(0, 0), vp2 = s2w(W, H);
+  const viewRect = { x: vp.x, y: vp.y, w: vp2.x - vp.x, h: vp2.y - vp.y };
+  const c = contentBox();
+  const union = c ? {
+    x: Math.min(c.x, viewRect.x), y: Math.min(c.y, viewRect.y),
+    w: Math.max(c.x + c.w, viewRect.x + viewRect.w) - Math.min(c.x, viewRect.x),
+    h: Math.max(c.y + c.h, viewRect.y + viewRect.h) - Math.min(c.y, viewRect.y)
+  } : viewRect;
+
+  const pad = 14;
+  const k = Math.min((MMW - pad * 2) / Math.max(union.w, 1), (MMH - pad * 2) / Math.max(union.h, 1));
+  mmBox = union; mmFitK = k;
+  mmOff = { x: MMW / 2 - (union.x + union.w / 2) * k, y: MMH / 2 - (union.y + union.h / 2) * k };
+  const tx = (wx) => wx * k + mmOff.x, ty = (wy) => wy * k + mmOff.y;
+
+  mmCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  mmCtx.clearRect(0, 0, MMW, MMH);
+  mmCtx.fillStyle = '#F6F6F4'; mmCtx.fillRect(0, 0, MMW, MMH);
+
+  // 连线
+  mmCtx.strokeStyle = 'rgba(57,64,78,.5)'; mmCtx.lineWidth = 1;
+  for (const cn of S.conns) {
+    const A = byId(cn.a), B = byId(cn.b); if (!A || !B) continue;
+    const ca = centerOf(boxOf(A)), cb = centerOf(boxOf(B));
+    mmCtx.beginPath(); mmCtx.moveTo(tx(ca.x), ty(ca.y)); mmCtx.lineTo(tx(cb.x), ty(cb.y)); mmCtx.stroke();
+  }
+  // 笔迹
+  mmCtx.lineCap = 'round'; mmCtx.lineJoin = 'round';
+  for (const s of S.strokes) {
+    if (s.pts.length < 2) continue;
+    mmCtx.strokeStyle = s.color; mmCtx.lineWidth = Math.max(1, Math.min(3, s.w * k));
+    mmCtx.beginPath(); mmCtx.moveTo(tx(s.pts[0].x), ty(s.pts[0].y));
+    for (let i = 1; i < s.pts.length; i++) mmCtx.lineTo(tx(s.pts[i].x), ty(s.pts[i].y));
+    mmCtx.stroke();
+  }
+  // 便签
+  for (const n of S.notes) {
+    mmCtx.fillStyle = n.color;
+    mmCtx.fillRect(tx(n.x), ty(n.y), Math.max(2, n.w * k), Math.max(2, n.h * k));
+    if (S.sel.has(n.id)) {
+      mmCtx.strokeStyle = '#E04A1F'; mmCtx.lineWidth = 1;
+      mmCtx.strokeRect(tx(n.x) - .5, ty(n.y) - .5, Math.max(2, n.w * k) + 1, Math.max(2, n.h * k) + 1);
+    }
+  }
+  // 视口框
+  const vx = tx(viewRect.x), vy = ty(viewRect.y);
+  const vw = viewRect.w * k, vh = viewRect.h * k;
+  mmCtx.fillStyle = 'rgba(224,74,31,.09)';
+  mmCtx.strokeStyle = '#E04A1F'; mmCtx.lineWidth = 1.5;
+  mmCtx.fillRect(vx, vy, vw, vh);
+  mmCtx.strokeRect(vx + .75, vy + .75, vw - 1.5, vh - 1.5);
+}
+
+/* 迷你地图点击 / 拖拽定位 */
+function mmLocate(e) {
+  if (!mmBox) return;
+  const r = mm.getBoundingClientRect();
+  const wx = (e.clientX - r.left - mmOff.x) / mmFitK;
+  const wy = (e.clientY - r.top - mmOff.y) / mmFitK;
+  S.view.x = W / 2 - wx * S.view.k;
+  S.view.y = H / 2 - wy * S.view.k;
+  applyView();
+}
+mm.addEventListener('pointerdown', e => {
+  e.stopPropagation(); hideMenu(); mmLocate(e);
+  const move = ev => mmLocate(ev);
+  const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+  window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+});
+
+function fitToContent() {
+  const c = contentBox();
+  if (!c) { S.view = { x: 0, y: 0, k: 1 }; applyView(); return; }
+  const pad = 90;
+  const k = clamp(Math.min((W - pad * 2) / c.w, (H - pad * 2) / c.h), ZMIN, 1.6);
+  S.view.k = k;
+  S.view.x = W / 2 - (c.x + c.w / 2) * k;
+  S.view.y = H / 2 - (c.y + c.h / 2) * k;
+  applyView();
+}
+
+function focusWorld(wx, wy) {
+  S.view.x = W / 2 - wx * S.view.k;
+  S.view.y = H / 2 - wy * S.view.k;
+  applyView();
+}
+
+/* ============================================================
+   10. 事件绑定
+   ============================================================ */
+$$('.tool[data-tool]').forEach(b => b.addEventListener('click', () => setTool(b.dataset.tool)));
+
+$$('#palNote .sw').forEach(s => s.addEventListener('click', () => {
+  S.noteColor = s.dataset.color; setNoteColor(s.dataset.color);
+}));
+$$('#palInk .sw').forEach(s => s.addEventListener('click', () => {
+  S.inkColor = s.dataset.color; syncPalettes();
+}));
+
+// 浮动操作条色板（复用便签六色）
+actSw.innerHTML = ['#FFE066', '#B7E3A8', '#A7CDF0', '#F9B8C4', '#D5C2F2', '#FFC38B']
+  .map(c => '<button class="sw" data-color="' + c + '" style="background:' + c + '" aria-label="便签颜色 ' + c + '"></button>').join('');
+actSw.addEventListener('click', e => {
+  const s = e.target.closest('.sw'); if (!s) return;
+  S.noteColor = s.dataset.color; setNoteColor(s.dataset.color);
+});
+actbar.addEventListener('click', e => {
+  const b = e.target.closest('[data-act]'); if (!b) return;
+  if (b.dataset.act === 'duplicate') duplicateSelection();
+  if (b.dataset.act === 'delete') deleteSelection();
+});
+
+const brushRange = $('#brushRange'), brushPrev = $('#brushPrev');
+brushRange.addEventListener('input', () => {
+  S.inkWidth = +brushRange.value;
+  const d = clamp(3 + S.inkWidth * 0.62, 4, 20);
+  brushPrev.style.width = d + 'px'; brushPrev.style.height = d + 'px';
+});
+brushRange.dispatchEvent(new Event('input'));
+
+$('#undoBtn').addEventListener('click', undo);
+$('#redoBtn').addEventListener('click', redo);
+$('#zoomIn').addEventListener('click', () => setZoom(S.view.k * 1.25));
+$('#zoomOut').addEventListener('click', () => setZoom(S.view.k / 1.25));
+$('#zoomFit').addEventListener('click', fitToContent);
+$('#mmFit').addEventListener('click', fitToContent);
+
+const liveBtn = $('#liveBtn');
+liveBtn.addEventListener('click', () => {
+  S.liveCursors = !S.liveCursors;
+  liveBtn.dataset.on = String(S.liveCursors);
+  liveBtn.setAttribute('aria-pressed', String(S.liveCursors));
+  invalidate();
+});
+
+/* 键盘 */
+let spaceDown = false;
+window.addEventListener('keydown', e => {
+  const editing = document.activeElement && document.activeElement.isContentEditable;
+  const meta = e.metaKey || e.ctrlKey;
+
+  const onButton = document.activeElement && document.activeElement.tagName === 'BUTTON';
+  if (e.code === 'Space' && !editing && !onButton) {
+    if (!spaceDown) { spaceDown = true; stage.classList.add('is-space'); }
+    e.preventDefault(); return;
+  }
+  if (e.key === 'Escape') {
+    hideMenu();
+    if (editing) { document.activeElement.blur(); return; }
+    if (tempConn) { tempConn = null; invalidate(); return; }
+    S.sel.clear(); paintNotes(); updateSelUI(); invalidate(); return;
+  }
+  if (editing) return;
+
+  if (meta && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+  if (meta && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
+  if (meta && e.key.toLowerCase() === 'a') { e.preventDefault(); S.sel = new Set(S.notes.map(n => n.id)); paintNotes(); updateSelUI(); invalidate(); return; }
+  if (meta && e.key.toLowerCase() === 'd') { e.preventDefault(); duplicateSelection(); return; }
+  if (meta && (e.key === '0' || e.code === 'Digit0')) { e.preventDefault(); setZoom(1); return; }
+  if (meta && (e.key === '=' || e.key === '+')) { e.preventDefault(); setZoom(S.view.k * 1.25); return; }
+  if (meta && e.key === '-') { e.preventDefault(); setZoom(S.view.k / 1.25); return; }
+  if (e.shiftKey && (e.code === 'Digit1' || e.key === '!')) { e.preventDefault(); fitToContent(); return; }
+  if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelection(); return; }
+  if (meta) return;
+
+  switch (e.key.toLowerCase()) {
+    case 'v': setTool('select'); break;
+    case 'n': setTool('note'); break;
+    case 'p': setTool('pen'); break;
+    case 'l': setTool('connector'); break;
+    case 'h': setTool('pan'); break;
+  }
+});
+window.addEventListener('keyup', e => {
+  if (e.code === 'Space') { spaceDown = false; stage.classList.remove('is-space'); }
+});
+
+/* 尺寸 */
+function resize() {
+  const r = stage.getBoundingClientRect();
+  W = r.width; H = r.height;
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  scene.width = Math.round(W * DPR); scene.height = Math.round(H * DPR);
+  scene.style.width = W + 'px'; scene.style.height = H + 'px';
+  const mmR = mm.getBoundingClientRect();
+  MMW = mmR.width; MMH = mmR.height;
+  mm.width = Math.round(mmR.width * DPR); mm.height = Math.round(mmR.height * DPR);
+  applyView();
+}
+window.addEventListener('resize', resize);
+if (window.ResizeObserver) new ResizeObserver(resize).observe(stage);
+
+/* 主循环 */
+function loop() {
+  if (S.liveCursors && !REDUCED) { stepPeers(); dirty = true; }
+  if (dirty) { render(); dirty = false; }
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   11. 初始化（预置一份示例内容）
+   ============================================================ */
+function seed() {
+  const mk = (x, y, color, text) => ({ id: uid(), x, y, w: NOTE_W, h: NOTE_H, color, text });
+  const a = mk(0, 0, '#FFE066', '双击我，就能编辑文字');
+  const b = mk(288, 84, '#A7CDF0', '按住拖动\n可以挪动便签');
+  const c = mk(72, 288, '#B7E3A8', '右键唤出菜单：\n换色 / 复制 / 删除');
+  const d = mk(600, 240, '#F9B8C4', '用连线工具\n把我连起来 →');
+  S.notes = [a, b, c, d];
+  S.conns = [{ id: uid(), a: a.id, b: b.id }, { id: uid(), a: b.id, b: d.id }];
+  peers.forEach((p, i) => { p.wx = 200 + i * 260; p.wy = 120 + i * 90; p.tx = p.wx; p.ty = p.wy; });
+}
+
+resize();
+seed();
+paintNotes();
+setTool('select');
+syncHistUI();
+fitToContent();
+applyView();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

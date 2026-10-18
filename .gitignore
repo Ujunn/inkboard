@@ -1,0 +1,3 @@
+# WorkBuddy 会话与记忆数据，不入库
+.workbuddy/
+.DS_Store
