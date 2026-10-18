@@ -1,3 +1,6 @@
 # WorkBuddy 会话与记忆数据，不入库
 .workbuddy/
 .DS_Store
+
+# 服务端运行时落盘的各房间画布状态
+data/

@@ -3,12 +3,19 @@
 <head>
 <meta charset="UTF-8">
 <title>砚 · INKBOARD</title>
-<!-- GitHub Pages 默认只认 index.html，这里跳转到真正的白板文件 -->
-<meta http-equiv="refresh" content="0; url=inkboard.html">
-<link rel="canonical" href="inkboard.html">
-<script>location.replace('inkboard.html');</script>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- GitHub Pages 根路径只认 index.html，这里跳转到真正的白板文件。
+     必须带上 location.search：房间号靠 ?room=xxx 传，丢了会进错房间。 -->
+<script>
+(function () {
+  location.replace('inkboard.html' + (location.search || '') + (location.hash || ''));
+})();
+</script>
 </head>
-<body>
-<p>正在打开白板……若未自动跳转，请点 <a href="inkboard.html">inkboard.html</a>。</p>
+<body style="font:14px/1.6 -apple-system,'PingFang SC',sans-serif;color:#2E333E;padding:40px">
+<p>正在打开白板……若未自动跳转，请点 <a id="go" href="inkboard.html">这里</a>。</p>
+<script>
+document.getElementById('go').href = 'inkboard.html' + (location.search || '') + (location.hash || '');
+</script>
 </body>
 </html>

@@ -194,9 +194,15 @@ input[type=range]::-moz-range-thumb{width:13px;height:13px;border:0;border-radiu
   transition:color var(--d1) ease,border-color var(--d1) ease,background var(--d1) ease;
 }
 .live:hover{color:#E8EAEE;border-color:rgba(255,255,255,.28);background:rgba(255,255,255,.05);}
-.live[data-on="1"]{color:#FFB59E;border-color:rgba(224,74,31,.45);background:rgba(224,74,31,.12);}
+.live[data-state="online"]{color:#9BE3A8;border-color:rgba(63,185,80,.4);background:rgba(63,185,80,.10);}
+.live[data-state="offline"]{color:#B9BFC9;border-color:rgba(255,255,255,.14);}
 .live i{width:6px;height:6px;border-radius:50%;background:var(--ink-500);display:block;transition:background var(--d2) ease;}
-.live[data-on="1"] i{background:var(--accent-hi);box-shadow:0 0 0 3px rgba(224,74,31,.25);}
+.live[data-state="online"] i{background:#3FB950;box-shadow:0 0 0 3px rgba(63,185,80,.22);}
+.live[data-state="connecting"] i{background:#D29922;animation:blink 1.1s ease-in-out infinite;}
+.live[data-state="offline"] i{background:#6E7681;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+/* 自己的头像带一圈高亮 */
+.stack span.me{box-shadow:0 0 0 2px var(--ink-900), 0 0 0 3.5px #fff;}
 
 /* 缩放 */
 .zoom{display:flex;align-items:center;gap:2px;}
@@ -513,15 +519,15 @@ input[type=range]::-moz-range-thumb{width:13px;height:13px;border:0;border-radiu
 
   <span class="rule"></span>
 
-  <!-- 协作者 -->
+  <!-- 协作者：真实在线成员，由同步层渲染 -->
   <div class="presence">
-    <div class="stack" aria-hidden="true">
-      <span style="background:var(--peer-a)">林</span>
-      <span style="background:var(--peer-b)">A</span>
-      <span style="background:var(--peer-c)">柯</span>
-    </div>
-    <button class="live" id="liveBtn" data-on="1" aria-pressed="true">
-      <i></i><span>3 人在线</span>
+    <div class="stack" id="stack"></div>
+    <button class="live" id="liveBtn" data-state="connecting" title="点击重新连接">
+      <i></i><span id="liveText">连接中…</span>
+    </button>
+    <button class="tool" id="inviteBtn" aria-label="复制邀请链接">
+      <svg viewBox="0 0 24 24"><path d="M9.5 13.5a4 4 0 005.7 0l2.6-2.6a4 4 0 00-5.7-5.7l-1.3 1.3"/><path d="M14.5 10.5a4 4 0 00-5.7 0l-2.6 2.6a4 4 0 005.7 5.7l1.3-1.3"/></svg>
+      <span class="tip">复制邀请链接 <b>5 人共用同一房间</b></span>
     </button>
   </div>
 
@@ -588,7 +594,9 @@ const $  = (s, r) => (r || document).querySelector(s);
 const $$ = (s, r) => Array.prototype.slice.call((r || document).querySelectorAll(s));
 const REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
-const uid = (() => { let i = 0; return () => ++i; })();
+/* 协作模式下 ID 由各客户端各自生成，必须用随机串避免跨端撞号。
+   字符集需匹配服务端 safeId 的白名单 [A-Za-z0-9_-] */
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
 const stage   = $('#stage');
 const scene   = $('#scene');
@@ -627,15 +635,28 @@ const S = {
 };
 
 const els = new Map();       // noteId -> element
-let hist = [], future = [];
+let undoStack = [], redoStack = [];
 let W = 0, H = 0, DPR = 1;
 let dirty = true;
+let lastEmit = 0;            // 连续动作（拖拽/绘制）的广播节流时间戳
+let lastCursor = 0;          // 光标广播节流时间戳
 
-/* 协作者光标（模拟） */
-const peers = [
-  { name: '林川', color: '#2F5FD0', wx: 0, wy: 0, tx: 0, ty: 0, wait: 0 },
-  { name: 'Ava',  color: '#0E8A6A', wx: 0, wy: 0, tx: 0, ty: 0, wait: 0 }
-];
+/* ============================================================
+   1.5 实时同步层状态
+   ============================================================ */
+const NET = {
+  ws: null,
+  ready: false,
+  room: 'main',
+  me: null,                 // {id,name,color}
+  peers: new Map(),         // id -> {id,name,color,x,y,note}
+  state: 'connecting',      // connecting | online | offline
+  retry: 0,
+  timer: null,
+  queue: [],                // 断线期间产生的操作，重连后补发
+  firstInit: true,
+  solo: false               // 单机模式：没有服务端，本地可用但不广播
+};
 
 /* ============================================================
    2. 坐标换算
@@ -662,42 +683,105 @@ function edgePoint(b, target) {
 }
 
 /* ============================================================
-   3. 历史（快照式撤销 / 重做）
+   3. 操作（op）应用与撤销
+   —— 协作下不能用「整盘快照」做撤销：快照里混了别人的改动，
+      一撤销就会连别人刚加的东西一起删掉。所以每次本地改动都同时
+      算正向 op 和逆向 op，撤销只回滚自己那一份。
    ============================================================ */
-function snapshot() {
-  return JSON.stringify({ n: S.notes, s: S.strokes, c: S.conns });
-}
-function pushHist(prev) {
-  hist.push(prev);
-  if (hist.length > 100) hist.shift();
-  future.length = 0;
-  syncHistUI();
-}
-function restore(json) {
-  const d = JSON.parse(json);
-  S.notes = d.n; S.strokes = d.s; S.conns = d.c;
-  S.sel.clear();
-  rebuildDom();
-  syncHistUI();
+const cloneNote = n => ({ id: n.id, x: n.x, y: n.y, w: n.w, h: n.h, color: n.color, text: n.text });
+const cloneStroke = s => ({ id: s.id, color: s.color, w: s.w, pts: s.pts.map(p => ({ x: p.x, y: p.y })) });
+
+/** 应用一组 op（本地发起与远端下发走同一条路径，保证两端一致） */
+function applyOps(ops) {
+  if (!ops || !ops.length) return;
+  let touched = false;
+  for (const op of ops) {
+    switch (op.k) {
+      case 'n+':
+        if (!S.notes.some(n => n.id === op.note.id)) { S.notes.push(cloneNote(op.note)); touched = true; }
+        break;
+      case 'n~': {
+        const n = S.notes.find(x => x.id === op.id);
+        if (n) { Object.assign(n, op.patch); touched = true; }
+        break;
+      }
+      case 'n-': {
+        const ids = new Set(op.ids);
+        const before = S.notes.length;
+        S.notes = S.notes.filter(n => !ids.has(n.id));
+        S.conns = S.conns.filter(c => !ids.has(c.a) && !ids.has(c.b));
+        if (S.notes.length !== before) touched = true;
+        break;
+      }
+      case 's+':
+        if (!S.strokes.some(s => s.id === op.stroke.id)) { S.strokes.push(cloneStroke(op.stroke)); touched = true; }
+        break;
+      case 's.': {
+        const s = S.strokes.find(x => x.id === op.id);
+        if (s) { for (const p of op.pts) s.pts.push({ x: p.x, y: p.y }); touched = true; }
+        break;
+      }
+      case 's-': {
+        const ids = new Set(op.ids);
+        const before = S.strokes.length;
+        S.strokes = S.strokes.filter(s => !ids.has(s.id));
+        if (S.strokes.length !== before) touched = true;
+        break;
+      }
+      case 'c+':
+        if (!S.conns.some(c => c.id === op.conn.id)) { S.conns.push({ id: op.conn.id, a: op.conn.a, b: op.conn.b }); touched = true; }
+        break;
+      case 'c-': {
+        const ids = new Set(op.ids);
+        const before = S.conns.length;
+        S.conns = S.conns.filter(c => !ids.has(c.id));
+        if (S.conns.length !== before) touched = true;
+        break;
+      }
+    }
+  }
+  if (!touched) return;
+
+  const alive = new Set(S.notes.map(n => n.id));
+  S.conns = S.conns.filter(c => alive.has(c.a) && alive.has(c.b));
+  for (const id of [...S.sel]) if (!alive.has(id)) S.sel.delete(id);
+
+  paintNotes();
+  updateSelUI();
   invalidate();
 }
-function undo() {
-  if (!hist.length) return;
-  const cur = snapshot();
-  future.push(cur);
-  restore(hist.pop());
+
+/** 本地发起：立即应用 + 广播 + 记入撤销栈 */
+function doOps(fwd, inv) {
+  applyOps(fwd);
+  netSend({ t: 'ops', ops: fwd });
+  if (inv && inv.length) pushUndo(fwd, inv);
+}
+
+/** 拖拽 / 绘制这类连续动作：只广播不记账，动作结束时统一记一笔 */
+function emitLive(ops) { netSend({ t: 'ops', ops: ops }); }
+
+function pushUndo(fwd, inv) {
+  undoStack.push({ f: fwd, i: inv });
+  if (undoStack.length > 80) undoStack.shift();
+  redoStack.length = 0;
   syncHistUI();
+}
+function undo() {
+  const e = undoStack.pop();
+  if (!e) return;
+  applyOps(e.i); netSend({ t: 'ops', ops: e.i });
+  redoStack.push(e); syncHistUI();
 }
 function redo() {
-  if (!future.length) return;
-  const cur = snapshot();
-  hist.push(cur);
-  restore(future.pop());
-  syncHistUI();
+  const e = redoStack.pop();
+  if (!e) return;
+  applyOps(e.f); netSend({ t: 'ops', ops: e.f });
+  undoStack.push(e); syncHistUI();
 }
 function syncHistUI() {
-  $('#undoBtn').disabled = !hist.length;
-  $('#redoBtn').disabled = !future.length;
+  $('#undoBtn').disabled = !undoStack.length;
+  $('#redoBtn').disabled = !redoStack.length;
 }
 
 /* ============================================================
@@ -745,6 +829,7 @@ function startEditing(n) {
   const t = $('.note-text', el);
   el.classList.add('editing');
   t.setAttribute('contenteditable', 'true');
+  netSend({ t: 'edit', id: n.id });      // 告诉别人「我在改这张」，避免同时改
   t.focus();
   const r = document.createRange();
   r.selectNodeContents(t); r.collapse(false);
@@ -753,11 +838,11 @@ function startEditing(n) {
   const commit = () => {
     t.removeAttribute('contenteditable');
     el.classList.remove('editing');
+    netSend({ t: 'edit', id: null });
     const now = t.textContent;
     if (now !== before) {
-      const prev = snapshot();
-      n.text = now;
-      pushHist(prev);
+      doOps([{ k: 'n~', id: n.id, patch: { text: now } }],
+            [{ k: 'n~', id: n.id, patch: { text: before } }]);
     }
     t.textContent = n.text;
     invalidate();
@@ -908,7 +993,6 @@ function beginDrag(e, onMove, onEnd) {
 }
 
 function beginNoteDrag(e) {
-  const prev = snapshot();
   const ids = [...S.sel];
   const origin = new Map(ids.map(id => { const n = byId(id); return [id, { x: n.x, y: n.y }]; }));
   let moved = false;
@@ -924,16 +1008,30 @@ function beginNoteDrag(e) {
       const el = els.get(id); if (el) { el.style.left = n.x + 'px'; el.style.top = n.y + 'px'; }
     }
     updateSelUI(); invalidate();
+    // 拖拽过程中节流广播，别人能实时看到跟随
+    const now = performance.now();
+    if (now - lastEmit > 45) {
+      lastEmit = now;
+      emitLive(ids.map(id => ({ k: 'n~', id, patch: { x: byId(id).x, y: byId(id).y } })));
+    }
   }, () => {
     ids.forEach(id => { const el = els.get(id); if (el) el.classList.remove('is-drag'); });
-    if (moved) pushHist(prev);
+    if (moved) {
+      const fwd = [], inv = [];
+      for (const id of ids) {
+        const n = byId(id), o = origin.get(id);
+        if (!n) continue;
+        fwd.push({ k: 'n~', id, patch: { x: n.x, y: n.y } });
+        inv.push({ k: 'n~', id, patch: { x: o.x, y: o.y } });
+      }
+      if (fwd.length) { emitLive(fwd); pushUndo(fwd, inv); }   // 已本地生效，只补发+记账
+    }
     invalidate();
   });
 }
 
 function beginResize(e, dir) {
   const id = [...S.sel][0]; const n = byId(id); if (!n) return;
-  const prev = snapshot();
   const o = { x: n.x, y: n.y, w: n.w, h: n.h };
   let moved = false;
   beginDrag(e, (dx, dy) => {
@@ -950,7 +1048,19 @@ function beginResize(e, dir) {
     n.x = x; n.y = y; n.w = w; n.h = h;
     layoutNote(els.get(id), n);
     updateSelUI(); invalidate();
-  }, () => { if (moved) pushHist(prev); invalidate(); });
+    const now = performance.now();
+    if (now - lastEmit > 45) {
+      lastEmit = now;
+      emitLive([{ k: 'n~', id, patch: { x: n.x, y: n.y, w: n.w, h: n.h } }]);
+    }
+  }, () => {
+    if (moved) {
+      const fwd = [{ k: 'n~', id, patch: { x: n.x, y: n.y, w: n.w, h: n.h } }];
+      const inv = [{ k: 'n~', id, patch: { x: o.x, y: o.y, w: o.w, h: o.h } }];
+      emitLive(fwd); pushUndo(fwd, inv);
+    }
+    invalidate();
+  });
 }
 
 let marquee = null;
@@ -988,18 +1098,35 @@ stage.addEventListener('pointerdown', e => {
   }
 
   if (S.tool === 'pen') {
-    const prev = snapshot();
     const st = { id: uid(), color: S.inkColor, w: S.inkWidth, pts: [{ x: w.x, y: w.y }] };
     S.strokes.push(st);
+    // 起笔即广播，远端立刻看到这条笔迹出现
+    emitLive([{ k: 's+', stroke: { id: st.id, color: st.color, w: st.w, pts: [{ x: w.x, y: w.y }] } }]);
     const minD = 1.6 / S.view.k;
+    let pending = [];
+    let lastFlush = performance.now();
     beginDrag(e, (dx, dy, ev) => {
       const q = localPt(ev); const wp = s2w(q.x, q.y);
       const last = st.pts[st.pts.length - 1];
       if (Math.hypot(wp.x - last.x, wp.y - last.y) < minD) return;
       st.pts.push({ x: wp.x, y: wp.y });
+      pending.push({ x: wp.x, y: wp.y });
+      // 只增量补点，不整条重传，避免 O(n²) 流量
+      const now = performance.now();
+      if (pending.length >= 6 || now - lastFlush > 60) {
+        lastFlush = now;
+        emitLive([{ k: 's.', id: st.id, pts: pending }]);
+        pending = [];
+      }
       invalidate();
     }, () => {
-      if (st.pts.length < 2) S.strokes.pop(); else pushHist(prev);
+      if (pending.length) emitLive([{ k: 's.', id: st.id, pts: pending }]);
+      if (st.pts.length < 2) {
+        S.strokes = S.strokes.filter(s => s.id !== st.id);
+        emitLive([{ k: 's-', ids: [st.id] }]);
+      } else {
+        pushUndo([{ k: 's+', stroke: cloneStroke(st) }], [{ k: 's-', ids: [st.id] }]);
+      }
       invalidate();
     });
     return;
@@ -1020,9 +1147,11 @@ stage.addEventListener('pointerdown', e => {
       const q = localPt(ev); const wp = s2w(q.x, q.y);
       const to = hitNote(wp.x, wp.y);
       if (to && to.id !== tempConn.from) {
-        const prev = snapshot();
         const exists = S.conns.some(c => (c.a === tempConn.from && c.b === to.id) || (c.a === to.id && c.b === tempConn.from));
-        if (!exists) { S.conns.push({ id: uid(), a: tempConn.from, b: to.id }); pushHist(prev); }
+        if (!exists) {
+          const conn = { id: uid(), a: tempConn.from, b: to.id };
+          doOps([{ k: 'c+', conn }], [{ k: 'c-', ids: [conn.id] }]);
+        }
       }
       tempConn = null; invalidate();
     });
@@ -1058,8 +1187,14 @@ stage.addEventListener('dblclick', e => {
 });
 
 stage.addEventListener('pointermove', e => {
-  if (S.tool !== 'connector' || tempConn) return;
   const p = localPt(e); const w = s2w(p.x, p.y);
+  // 广播自己的光标（世界坐标，节流 ~60ms）
+  const now = performance.now();
+  if (now - lastCursor > 60) {
+    lastCursor = now;
+    netSend({ t: 'cursor', x: w.x, y: w.y });
+  }
+  if (S.tool !== 'connector' || tempConn) return;
   const hit = hitNote(w.x, w.y);
   els.forEach((el, id) => el.classList.toggle('is-target', !!hit && hit.id === id));
 });
@@ -1111,44 +1246,50 @@ function intersect(a, b) {
    7. 增删改
    ============================================================ */
 function addNote(x, y, color, text) {
-  const prev = snapshot();
   const n = { id: uid(), x: snap(x), y: snap(y), w: NOTE_W, h: NOTE_H, color: color || S.noteColor, text: text || '' };
-  S.notes.push(n);
   S.sel.clear(); S.sel.add(n.id);
-  paintNotes(); updateSelUI(); pushHist(prev); invalidate();
+  doOps([{ k: 'n+', note: n }], [{ k: 'n-', ids: [n.id] }]);
   return n;
 }
 const snap = v => Math.round(v / GRID) * GRID;
 
 function deleteSelection() {
   if (!S.sel.size) return;
-  const prev = snapshot();
-  const ids = new Set(S.sel);
-  S.notes = S.notes.filter(n => !ids.has(n.id));
-  S.conns = S.conns.filter(c => !ids.has(c.a) && !ids.has(c.b));
+  const ids = [...S.sel];
+  const notes = ids.map(byId).filter(Boolean);
+  if (!notes.length) return;
+  // 服务端 n- 会级联删连线，所以逆向要先把便签补回、再把连线补回
+  const conns = S.conns.filter(c => ids.indexOf(c.a) >= 0 || ids.indexOf(c.b) >= 0);
+  const inv = notes.map(n => ({ k: 'n+', note: cloneNote(n) }))
+    .concat(conns.map(c => ({ k: 'c+', conn: { id: c.id, a: c.a, b: c.b } })));
   S.sel.clear();
-  paintNotes(); updateSelUI(); pushHist(prev); invalidate();
+  doOps([{ k: 'n-', ids }], inv);
 }
 
 function duplicateSelection() {
   if (!S.sel.size) return;
-  const prev = snapshot();
   const copies = [];
   for (const id of S.sel) {
     const n = byId(id); if (!n) continue;
     copies.push({ id: uid(), x: n.x + 24, y: n.y + 24, w: n.w, h: n.h, color: n.color, text: n.text });
   }
-  S.notes = S.notes.concat(copies);
+  if (!copies.length) return;
   S.sel = new Set(copies.map(c => c.id));
-  paintNotes(); updateSelUI(); pushHist(prev); invalidate();
+  doOps(copies.map(n => ({ k: 'n+', note: n })), [{ k: 'n-', ids: copies.map(c => c.id) }]);
 }
 
 function setNoteColor(color) {
   S.noteColor = color;
-  if (!S.sel.size) { syncPalettes(); return; }
-  const prev = snapshot();
-  for (const id of S.sel) { const n = byId(id); if (n) n.color = color; }
-  paintNotes(); pushHist(prev); syncPalettes(); invalidate();
+  syncPalettes();
+  if (!S.sel.size) return;
+  const fwd = [], inv = [];
+  for (const id of S.sel) {
+    const n = byId(id);
+    if (!n || n.color === color) continue;
+    fwd.push({ k: 'n~', id, patch: { color } });
+    inv.push({ k: 'n~', id, patch: { color: n.color } });
+  }
+  if (fwd.length) doOps(fwd, inv);
 }
 
 function syncPalettes() {
@@ -1215,6 +1356,129 @@ menu.addEventListener('click', e => {
 /* 捕获阶段关闭菜单：便签会阻止冒泡，捕获能保证菜单照样收起 */
 window.addEventListener('pointerdown', e => { if (!menu.contains(e.target)) hideMenu(); }, true);
 window.addEventListener('blur', hideMenu);
+
+/* ============================================================
+   8.5 实时同步：连接 / 收发 / 在线成员
+   ============================================================ */
+const liveBtn  = $('#liveBtn');
+const liveText = $('#liveText');
+const stackEl  = $('#stack');
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function wsUrl() {
+  const q = new URLSearchParams(location.search);
+  const room = (q.get('room') || 'main').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || 'main';
+  NET.room = room;
+  const override = q.get('server');
+  if (override) return override;
+  // 直接双击打开本地文件时没有 host，默认连本机服务；连不上就单机用
+  if (location.protocol === 'file:') return 'ws://localhost:8080/ws?room=' + room;
+  return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws?room=' + room;
+}
+
+function netSend(obj) {
+  if (NET.ready && NET.ws && NET.ws.readyState === 1) {
+    try { NET.ws.send(JSON.stringify(obj)); return; } catch (e) { /* 掉线了，落到下面缓存 */ }
+  }
+  // 离线时只缓存「操作」；光标这类高频消息丢了无所谓
+  if (obj.t === 'ops') {
+    NET.queue.push(obj);
+    if (NET.queue.length > 300) NET.queue.shift();
+  }
+}
+
+function netConnect() {
+  if (NET.ws) { try { NET.ws.onclose = null; NET.ws.close(); } catch (e) {} }
+  NET.state = 'connecting';
+  paintNetUI();
+  let ws;
+  try { ws = new WebSocket(wsUrl()); } catch (e) { netScheduleRetry(); return; }
+  NET.ws = ws;
+
+  ws.onopen = () => {
+    NET.ready = true; NET.retry = 0; NET.state = 'online'; NET.solo = false;
+    paintNetUI();
+    const q = NET.queue; NET.queue = [];
+    q.forEach(netSend);                 // 补发断线期间的操作
+  };
+  ws.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    handleNet(m);
+  };
+  ws.onerror = () => {};
+  ws.onclose = () => {
+    NET.ready = false; NET.ws = null; NET.state = 'offline';
+    NET.peers.clear();
+    els.forEach(el => el.classList.remove('is-peer'));
+    paintNotes(); paintNetUI(); invalidate();
+    if (!localSeedDone && !S.notes.length && !S.strokes.length) localSeed();
+    netScheduleRetry();
+  };
+}
+
+function netScheduleRetry() {
+  NET.retry = Math.min(NET.retry + 1, 7);
+  const delay = Math.min(600 * Math.pow(1.7, NET.retry - 1), 10000);
+  clearTimeout(NET.timer);
+  NET.timer = setTimeout(netConnect, delay);
+}
+
+function handleNet(m) {
+  switch (m.t) {
+    case 'init': {
+      NET.me = m.you;
+      NET.peers.clear();
+      (m.peers || []).forEach(p => NET.peers.set(p.id, p));
+      S.notes   = (m.board.notes   || []).map(cloneNote);
+      S.strokes = (m.board.strokes || []).map(cloneStroke);
+      S.conns   = (m.board.conns   || []).map(c => ({ id: c.id, a: c.a, b: c.b }));
+      S.sel.clear();
+      undoStack = []; redoStack = [];
+      els.forEach(el => el.remove()); els.clear();
+      paintNotes(); updateSelUI(); syncHistUI(); paintNetUI();
+      if (NET.firstInit) { NET.firstInit = false; fitToContent(); }
+      invalidate();
+      // 第一个进空房间的人放一份示例内容，后面进来的人直接看到
+      if (!S.notes.length && !S.strokes.length && !NET.peers.size) seedToServer();
+      break;
+    }
+    case 'ops':    applyOps(m.ops); break;
+    case 'peer':   NET.peers.set(m.peer.id, m.peer); paintNetUI(); invalidate(); break;
+    case 'leave':  NET.peers.delete(m.id); paintNetUI(); invalidate(); break;
+    case 'cursor': { const p = NET.peers.get(m.id); if (p) { p.x = m.x; p.y = m.y; invalidate(); } break; }
+    case 'edit':   { const p = NET.peers.get(m.id); if (p) { p.note = m.note; invalidate(); } break; }
+    case 'name':   { const p = NET.peers.get(m.id); if (p) { p.name = m.name; paintNetUI(); invalidate(); } break; }
+  }
+}
+
+function paintNetUI() {
+  const total = NET.peers.size + (NET.me ? 1 : 0);
+  liveBtn.dataset.state = NET.state;
+  liveText.textContent =
+    NET.state === 'online'     ? (total + ' 人在线 · ' + NET.room) :
+    NET.state === 'connecting' ? '连接中…' : '离线（单机可用）';
+
+  let html = '';
+  if (NET.me) {
+    html += '<span class="me" style="background:' + NET.me.color + '" title="' + esc(NET.me.name) + '（你）">'
+          + esc(NET.me.name.slice(0, 1)) + '</span>';
+  }
+  [...NET.peers.values()].slice(0, 4).forEach(p => {
+    html += '<span style="background:' + p.color + '" title="' + esc(p.name) + '">' + esc(p.name.slice(0, 1)) + '</span>';
+  });
+  if (NET.peers.size > 4) html += '<span style="background:#3A4150">+' + (NET.peers.size - 4) + '</span>';
+  stackEl.innerHTML = html;
+}
+
+function roomUrl() {
+  try {
+    const u = new URL(location.href);
+    u.searchParams.set('room', NET.room);
+    return u.toString();
+  } catch (e) {
+    return location.href;
+  }
+}
 
 /* ============================================================
    9. 渲染
@@ -1315,52 +1579,61 @@ function drawTempConn() {
   ctx.restore();
 }
 
-/* 协作者光标 */
+/* 远端协作者：真实光标（来自网络）+「正在编辑」名牌 */
 const PEER_FONT = '600 10.5px ' + getComputedStyle(document.body).fontFamily;
-function stepPeers() {
-  const tl = s2w(0, 0), br = s2w(W, H);
-  for (const p of peers) {
-    if (p.wait <= 0) {
-      p.tx = tl.x + Math.random() * (br.x - tl.x);
-      p.ty = tl.y + Math.random() * (br.y - tl.y);
-      p.wait = 90 + Math.random() * 150;
-    }
-    p.wait--;
-    p.wx += (p.tx - p.wx) * 0.012;
-    p.wy += (p.ty - p.wy) * 0.012;
-  }
+
+function roundRect(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
 }
+
 function drawPeers() {
+  if (!NET.peers.size) return;
   ctx.save();
   ctx.font = PEER_FONT;
   ctx.textBaseline = 'middle';
-  for (const p of peers) {
-    const s = w2s(p.wx, p.wy);
-    if (s.x < -60 || s.y < -60 || s.x > W + 60 || s.y > H + 60) continue;
+
+  // 每帧先清掉上一帧的编辑描边，再按当前状态重新标
+  els.forEach(el => el.classList.remove('is-peer'));
+
+  NET.peers.forEach(p => {
+    if (p.note) {
+      const n = byId(p.note);
+      if (n) {
+        const el = els.get(n.id);
+        if (el) { el.classList.add('is-peer'); el.style.setProperty('--peer', p.color); }
+        const tl = w2s(n.x, n.y);
+        const label = p.name + ' 正在编辑';
+        const bw = ctx.measureText(label).width + 14, bh = 18;
+        const bx = tl.x, by = tl.y - bh - 6;
+        roundRect(ctx, bx, by, bw, bh, 5);
+        ctx.fillStyle = p.color; ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.fillText(label, bx + 7, by + bh / 2 + .5);
+      }
+    }
+    const s = w2s(p.x, p.y);
+    if (s.x < -80 || s.y < -80 || s.x > W + 80 || s.y > H + 80) return;
+    ctx.save();
     ctx.translate(s.x, s.y);
-    // 指针
     ctx.beginPath();
     ctx.moveTo(0, 0); ctx.lineTo(0, 17.5); ctx.lineTo(4.7, 13.1);
     ctx.lineTo(7.6, 19); ctx.lineTo(10.6, 17.6); ctx.lineTo(7.6, 11.8); ctx.lineTo(14, 11.2);
     ctx.closePath();
     ctx.fillStyle = '#fff'; ctx.strokeStyle = p.color; ctx.lineWidth = 1.6;
     ctx.fill(); ctx.stroke();
-    // 名牌
-    const tw = ctx.measureText(p.name).width;
-    const bw = tw + 14, bh = 18;
-    ctx.beginPath();
-    const r = 5, x = 13, y = 15;
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + bw, y, x + bw, y + bh, r);
-    ctx.arcTo(x + bw, y + bh, x, y + bh, r);
-    ctx.arcTo(x, y + bh, x, y, r);
-    ctx.arcTo(x, y, x + bw, y, r);
-    ctx.closePath();
+    const bw = ctx.measureText(p.name).width + 14, bh = 18;
+    roundRect(ctx, 13, 15, bw, bh, 5);
     ctx.fillStyle = p.color; ctx.fill();
     ctx.fillStyle = '#fff';
-    ctx.fillText(p.name, x + 7, y + bh / 2 + .5);
-    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  }
+    ctx.fillText(p.name, 20, 24.5);
+    ctx.restore();
+  });
   ctx.restore();
 }
 
@@ -1381,7 +1654,7 @@ function render() {
   drawConns();
   drawTempConn();
   drawMarquee();
-  if (S.liveCursors) drawPeers();
+  drawPeers();
 
   drawMinimap();
   emptyEl.hidden = (S.notes.length + S.strokes.length) > 0;
@@ -1536,12 +1809,36 @@ $('#zoomOut').addEventListener('click', () => setZoom(S.view.k / 1.25));
 $('#zoomFit').addEventListener('click', fitToContent);
 $('#mmFit').addEventListener('click', fitToContent);
 
-const liveBtn = $('#liveBtn');
 liveBtn.addEventListener('click', () => {
-  S.liveCursors = !S.liveCursors;
-  liveBtn.dataset.on = String(S.liveCursors);
-  liveBtn.setAttribute('aria-pressed', String(S.liveCursors));
-  invalidate();
+  if (NET.state !== 'online') { NET.retry = 0; clearTimeout(NET.timer); netConnect(); }
+});
+
+/* 邀请：复制带房间的链接，5 个人开同一个链接就在同一块画布上 */
+const inviteBtn = $('#inviteBtn');
+inviteBtn.addEventListener('click', async () => {
+  const url = roomUrl();
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(url);
+    ok = true;
+  } catch (e) {
+    // 非 HTTPS 下 clipboard API 不可用，退回 execCommand
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      ok = document.execCommand('copy');
+      ta.remove();
+    } catch (e2) { ok = false; }
+  }
+  const tip = inviteBtn.querySelector('.tip');
+  if (tip) {
+    const old = tip.innerHTML;
+    tip.innerHTML = ok ? '已复制，发给队友即可' : '手动复制：' + esc(url);
+    setTimeout(() => { tip.innerHTML = old; }, 2200);
+  }
 });
 
 /* 键盘 */
@@ -1601,9 +1898,8 @@ function resize() {
 window.addEventListener('resize', resize);
 if (window.ResizeObserver) new ResizeObserver(resize).observe(stage);
 
-/* 主循环 */
+/* 主循环：只在状态变脏时重绘。远端光标/操作到达时由 invalidate() 触发 */
 function loop() {
-  if (S.liveCursors && !REDUCED) { stepPeers(); dirty = true; }
   if (dirty) { render(); dirty = false; }
   requestAnimationFrame(loop);
 }
@@ -1611,24 +1907,46 @@ function loop() {
 /* ============================================================
    11. 初始化（预置一份示例内容）
    ============================================================ */
-function seed() {
+function demoBoard() {
   const mk = (x, y, color, text) => ({ id: uid(), x, y, w: NOTE_W, h: NOTE_H, color, text });
   const a = mk(0, 0, '#FFE066', '双击我，就能编辑文字');
   const b = mk(288, 84, '#A7CDF0', '按住拖动\n可以挪动便签');
   const c = mk(72, 288, '#B7E3A8', '右键唤出菜单：\n换色 / 复制 / 删除');
   const d = mk(600, 240, '#F9B8C4', '用连线工具\n把我连起来 →');
-  S.notes = [a, b, c, d];
-  S.conns = [{ id: uid(), a: a.id, b: b.id }, { id: uid(), a: b.id, b: d.id }];
-  peers.forEach((p, i) => { p.wx = 200 + i * 260; p.wy = 120 + i * 90; p.tx = p.wx; p.ty = p.wy; });
+  const notes = [a, b, c, d];
+  const conns = [{ id: uid(), a: a.id, b: b.id }, { id: uid(), a: b.id, b: d.id }];
+  return { notes, conns };
+}
+
+/** 第一个进空房间的人把示例内容推给服务端，全员可见且不进撤销栈 */
+function seedToServer() {
+  setTimeout(() => {
+    if (S.notes.length || S.strokes.length) return;   // 期间已有人放了，放弃
+    const d = demoBoard();
+    const ops = d.notes.map(n => ({ k: 'n+', note: n }))
+      .concat(d.conns.map(c => ({ k: 'c+', conn: c })));
+    applyOps(ops);
+    netSend({ t: 'ops', ops });
+    if (NET.firstInit === false && S.notes.length) { fitToContent(); }
+  }, 400 + Math.random() * 400);
+}
+
+/** 完全连不上服务端时的兜底：本地放一份，保证单机也能演示 */
+let localSeedDone = false;
+function localSeed() {
+  if (localSeedDone) return;
+  localSeedDone = true;
+  const d = demoBoard();
+  applyOps(d.notes.map(n => ({ k: 'n+', note: n })).concat(d.conns.map(c => ({ k: 'c+', conn: c }))));
+  fitToContent();
 }
 
 resize();
-seed();
 paintNotes();
 setTool('select');
 syncHistUI();
-fitToContent();
 applyView();
+netConnect();          // 连上后由 init 下发真实画布；连不上会退化为单机模式
 requestAnimationFrame(loop);
 
 })();

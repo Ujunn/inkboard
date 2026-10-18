@@ -1,0 +1,14 @@
+{
+  "name": "inkboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "砚 · INKBOARD — 单文件零依赖的实时协作白板（前端单 HTML + Node WebSocket 服务）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "PORT=8080 node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
