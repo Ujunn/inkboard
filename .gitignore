@@ -2,5 +2,8 @@
 .workbuddy/
 .DS_Store
 
+# 应用交付标记（内部产物，不是源码）
+.wbapp_*.genie
+
 # 服务端运行时落盘的各房间画布状态
 data/

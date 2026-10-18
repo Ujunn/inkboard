@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>砚 · INKBOARD — 实时协作白板</title>
+<!-- 云服务 SDK：单文件、无构建，按 cloud-service 技能走 CDN Form B，
+     加载后暴露全局 WorkBuddyCloud。断网/被拦时下方代码会降级并明说。 -->
+<script src="https://cdn.jsdelivr.net/npm/@tencent-ai/workbuddy-cloud-sdk@dev/lib/index.global.js"></script>
 <style>
 /* ============================================================
    设计令牌
@@ -201,6 +204,21 @@ input[type=range]::-moz-range-thumb{width:13px;height:13px;border:0;border-radiu
 .live[data-state="connecting"] i{background:#D29922;animation:blink 1.1s ease-in-out infinite;}
 .live[data-state="offline"] i{background:#6E7681;}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* 云端备份状态（点击可立即手动备份） */
+.cloud{
+  display:flex;align-items:center;gap:6px;
+  font-size:11px;color:#838B99;letter-spacing:.04em;
+  padding:6px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.12);
+  transition:color var(--d2) ease,border-color var(--d2) ease,background var(--d2) ease;
+}
+.cloud svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none;}
+.cloud:hover{color:#E8EAEE;border-color:rgba(255,255,255,.28);background:rgba(255,255,255,.05);}
+.cloud[data-state="ready"]{color:#9BB8F0;border-color:rgba(47,95,208,.42);background:rgba(47,95,208,.12);}
+.cloud[data-state="loading"],
+.cloud[data-state="saving"]{color:#E3B341;border-color:rgba(210,153,34,.4);background:rgba(210,153,34,.10);}
+.cloud[data-state="error"]{color:#F0957A;border-color:rgba(224,74,31,.45);background:rgba(224,74,31,.12);}
+.cloud[data-state="idle"]{color:#6E7681;}
 /* 自己的头像带一圈高亮 */
 .stack span.me{box-shadow:0 0 0 2px var(--ink-900), 0 0 0 3.5px #fff;}
 
@@ -525,6 +543,10 @@ input[type=range]::-moz-range-thumb{width:13px;height:13px;border:0;border-radiu
     <button class="live" id="liveBtn" data-state="connecting" title="点击重新连接">
       <i></i><span id="liveText">连接中…</span>
     </button>
+    <button class="cloud" id="cloudBtn" data-state="idle" title="云端备份">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18.5h10.4a3.8 3.8 0 00.4-7.58A5.6 5.6 0 007.3 9.7 4.5 4.5 0 017 18.5z"/></svg>
+      <span id="cloudText">云端</span>
+    </button>
     <button class="tool" id="inviteBtn" aria-label="复制邀请链接">
       <svg viewBox="0 0 24 24"><path d="M9.5 13.5a4 4 0 005.7 0l2.6-2.6a4 4 0 00-5.7-5.7l-1.3 1.3"/><path d="M14.5 10.5a4 4 0 00-5.7 0l-2.6 2.6a4 4 0 005.7 5.7l1.3-1.3"/></svg>
       <span class="tip">复制邀请链接 <b>5 人共用同一房间</b></span>
@@ -655,7 +677,27 @@ const NET = {
   timer: null,
   queue: [],                // 断线期间产生的操作，重连后补发
   firstInit: true,
+  everOffline: false,       // 是否曾经掉线过（决定重连时本地内容要不要推上去）
   solo: false               // 单机模式：没有服务端，本地可用但不广播
+};
+
+/* ============================================================
+   1.6 云端持久化状态
+   —— 分工：WebSocket 服务端管「实时」，云端数据库管「长期」。
+      每次改动防抖后把整块画布 upsert 一份到云端；服务端重启、
+      重新部署导致内存/data 丢失后，第一个进空房间的人能从云端
+      把画布找回来。协作免登录，所以表是房间级公开读写，
+      安全边界就是「谁知道房间名」——从云端读回的数据必须按
+      服务端同款白名单再过一遍，不能直接信。
+   ============================================================ */
+const CLOUD = {
+  ok: false,                // SDK 是否就绪
+  cloud: null,
+  state: 'idle',            // idle | loading | ready | saving | error
+  err: '',
+  lastSaved: 0,
+  saveTimer: null,
+  triedOffline: false       // 离线兜底是否已经试过从云端拉一次
 };
 
 /* ============================================================
@@ -749,6 +791,7 @@ function applyOps(ops) {
   paintNotes();
   updateSelUI();
   invalidate();
+  scheduleCloudSave();      // 任何改动（本地或远端）都让云端备份跟上
 }
 
 /** 本地发起：立即应用 + 广播 + 记入撤销栈 */
@@ -1365,11 +1408,16 @@ const liveText = $('#liveText');
 const stackEl  = $('#stack');
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-function wsUrl() {
+/** 房间号从 ?room= 取，非法字符滤掉，空则回落 main */
+function resolveRoom() {
   const q = new URLSearchParams(location.search);
-  const room = (q.get('room') || 'main').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || 'main';
-  NET.room = room;
-  const override = q.get('server');
+  NET.room = (q.get('room') || 'main').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || 'main';
+  return NET.room;
+}
+
+function wsUrl() {
+  const room = resolveRoom();
+  const override = new URLSearchParams(location.search).get('server');
   if (override) return override;
   // 直接双击打开本地文件时没有 host，默认连本机服务；连不上就单机用
   if (location.protocol === 'file:') return 'ws://localhost:8080/ws?room=' + room;
@@ -1407,11 +1455,15 @@ function netConnect() {
   };
   ws.onerror = () => {};
   ws.onclose = () => {
-    NET.ready = false; NET.ws = null; NET.state = 'offline';
+    NET.ready = false; NET.ws = null; NET.state = 'offline'; NET.everOffline = true;
     NET.peers.clear();
     els.forEach(el => el.classList.remove('is-peer'));
     paintNotes(); paintNetUI(); invalidate();
-    if (!localSeedDone && !S.notes.length && !S.strokes.length) localSeed();
+    // 完全连不上服务端：先试一次从云端把历史画布捞回来，再不行才放本地示例
+    if (!S.notes.length && !S.strokes.length) {
+      if (CLOUD.ok && !CLOUD.triedOffline) { CLOUD.triedOffline = true; cloudRestoreOrSeed(); }
+      else if (!localSeedDone) localSeed();
+    }
     netScheduleRetry();
   };
 }
@@ -1429,17 +1481,26 @@ function handleNet(m) {
       NET.me = m.you;
       NET.peers.clear();
       (m.peers || []).forEach(p => NET.peers.set(p.id, p));
-      S.notes   = (m.board.notes   || []).map(cloneNote);
-      S.strokes = (m.board.strokes || []).map(cloneStroke);
-      S.conns   = (m.board.conns   || []).map(c => ({ id: c.id, a: c.a, b: c.b }));
+      const sb = m.board || {};
+      const serverHas = !!(sb.notes && sb.notes.length) || !!(sb.strokes && sb.strokes.length);
+      const localHas  = !!(S.notes.length || S.strokes.length);
+      if (serverHas || !localHas || !NET.everOffline) {
+        // 以服务端为准：首次连接、服务端有内容、或本地本来就没东西
+        S.notes   = (sb.notes   || []).map(cloneNote);
+        S.strokes = (sb.strokes || []).map(cloneStroke);
+        S.conns   = (sb.conns   || []).map(c => ({ id: c.id, a: c.a, b: c.b }));
+      } else {
+        // 断线期间本地攒了改动、而服务端是空的：以本地为准，补传上去
+        netSend({ t: 'ops', ops: boardToOps(sanitizeBoard(boardSnapshot())) });
+      }
       S.sel.clear();
       undoStack = []; redoStack = [];
       els.forEach(el => el.remove()); els.clear();
       paintNotes(); updateSelUI(); syncHistUI(); paintNetUI();
       if (NET.firstInit) { NET.firstInit = false; fitToContent(); }
       invalidate();
-      // 第一个进空房间的人放一份示例内容，后面进来的人直接看到
-      if (!S.notes.length && !S.strokes.length && !NET.peers.size) seedToServer();
+      // 空房间：先从云端找历史画布，没有再放示例内容
+      if (!S.notes.length && !S.strokes.length && !NET.peers.size) cloudRestoreOrSeed();
       break;
     }
     case 'ops':    applyOps(m.ops); break;
@@ -1479,6 +1540,219 @@ function roomUrl() {
     return location.href;
   }
 }
+
+/* ============================================================
+   8.6 云端持久化（WorkBuddy Cloud Service）
+   ============================================================ */
+const cloudBtn  = $('#cloudBtn');
+const cloudText = $('#cloudText');
+
+/* publicConfig 由云服务开通时返回，是唯一可以进前端源码的值；
+   publishableKey 只标识「哪个应用」，本身不带权限，服务端按 Origin 校验 */
+const WB_PUBLIC_CONFIG = {
+  endpoint:         'https://inkboard.app.workbuddy.host',
+  oauthRelayBaseUrl:'https://www.workbuddy.cn/v2/as/genie-baas/oauth',
+  publishableKey:   'wbpk_KWaCwgoMwN18KkxU9OaPeF_q3cJaW0vKWr4Li2TV0bM9DDKnjmbCrBv'
+};
+/* 单行 JSONB 上限：超过就明确说「这份没进云端」，不静默丢 */
+const CLOUD_MAX_CHARS = 1200000;
+
+/* 与 server.js sanitizeOp 同款白名单。云端行是公开可写的，
+   谁拿到房间名都能改，所以读回时必须重新校验，不能直接塞进 DOM。 */
+const SAFE_COLOR = v => (/^#[0-9a-fA-F]{6}$/.test(v || '') ? v : '#FFE066');
+const SAFE_ID    = v => (/^[A-Za-z0-9_-]{1,40}$/.test(v || '') ? v : null);
+const fin        = (v, d) => (typeof v === 'number' && isFinite(v) ? v : d);
+
+function sanitizeNote(n) {
+  if (!n || typeof n !== 'object') return null;
+  const id = SAFE_ID(n.id); if (!id) return null;
+  return {
+    id,
+    x: clamp(fin(n.x, 0), -1e5, 1e5), y: clamp(fin(n.y, 0), -1e5, 1e5),
+    w: clamp(fin(n.w, NOTE_W), 60, 1200), h: clamp(fin(n.h, NOTE_H), 40, 1200),
+    color: SAFE_COLOR(n.color),
+    text: typeof n.text === 'string' ? n.text.slice(0, 4000) : ''
+  };
+}
+function sanitizeStroke(s) {
+  if (!s || typeof s !== 'object') return null;
+  const id = SAFE_ID(s.id); if (!id) return null;
+  const pts = (Array.isArray(s.pts) ? s.pts : []).slice(0, 6000)
+    .map(p => ({ x: clamp(fin(p && p.x, 0), -1e5, 1e5), y: clamp(fin(p && p.y, 0), -1e5, 1e5) }));
+  if (!pts.length) return null;
+  return { id, color: SAFE_COLOR(s.color), w: clamp(fin(s.w, 4), 1, 40), pts };
+}
+function sanitizeBoard(b) {
+  if (!b || typeof b !== 'object') return null;
+  return {
+    notes:   (Array.isArray(b.notes)   ? b.notes   : []).map(sanitizeNote).filter(Boolean).slice(0, 800),
+    strokes: (Array.isArray(b.strokes) ? b.strokes : []).map(sanitizeStroke).filter(Boolean).slice(0, 4000),
+    conns:   (Array.isArray(b.conns)   ? b.conns   : [])
+      .map(c => {
+        const id = SAFE_ID(c && c.id), a = SAFE_ID(c && c.a), bb = SAFE_ID(c && c.b);
+        return (id && a && bb) ? { id, a, b: bb } : null;
+      }).filter(Boolean).slice(0, 1500)
+  };
+}
+/** 当前画布 → 可写入云端的紧凑结构（笔迹坐标取整，行更小） */
+function boardSnapshot() {
+  return {
+    notes: S.notes.map(n => ({
+      id: n.id, x: Math.round(n.x), y: Math.round(n.y),
+      w: Math.round(n.w), h: Math.round(n.h), color: n.color, text: n.text
+    })),
+    strokes: S.strokes.map(s => ({
+      id: s.id, color: s.color, w: s.w,
+      pts: s.pts.map(p => ({ x: Math.round(p.x), y: Math.round(p.y) }))
+    })),
+    conns: S.conns.map(c => ({ id: c.id, a: c.a, b: c.b }))
+  };
+}
+/** 一份画布 → 一组 op，走 applyOps 让本地和远端复同一条路径 */
+function boardToOps(b) {
+  const ops = [];
+  if (!b) return ops;
+  b.notes.forEach(n => ops.push({ k: 'n+', note: n }));
+  b.strokes.forEach(s => ops.push({ k: 's+', stroke: s }));
+  b.conns.forEach(c => ops.push({ k: 'c+', conn: c }));
+  return ops;
+}
+
+function cloudErrText(e) {
+  if (!e) return '未知错误';
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return '网络已断开，稍后自动重试';
+  const msg = String((e && e.message) || e.error_description || '');
+  const status = e && e.status;
+  if (e && e.code === '42501') return '云端数据库拒绝了这次写入（权限不足）';
+  if (e && e.code === '42P01') return '云端还没有 boards 表';
+  if (status === 401 || status === 403 || /\b(401|403)\b|origin/i.test(msg))
+    return '当前打开方式不被云服务允许（请从应用域名访问）';
+  if (status === 429 || /quota|rate.?limit/i.test(msg)) return '云端配额已用尽或触发限流';
+  return (msg || '未知错误').slice(0, 90);
+}
+
+function cloudInit() {
+  if (!window.WorkBuddyCloud || typeof window.WorkBuddyCloud.createWorkBuddyCloud !== 'function') {
+    CLOUD.state = 'error';
+    CLOUD.err = '云服务组件没加载出来（CDN 被拦？），实时协作不受影响';
+    paintCloudUI();
+    return;
+  }
+  // 服务端按 Origin 精确匹配；不在应用域名下就别反复发注定失败的请求
+  let sameOrigin = false;
+  try { sameOrigin = location.origin === new URL(WB_PUBLIC_CONFIG.endpoint).origin; }
+  catch (e) { sameOrigin = false; }
+  if (!sameOrigin) {
+    CLOUD.state = 'error';
+    CLOUD.err = '云端备份只在应用域名下可用（当前地址不是 ' + WB_PUBLIC_CONFIG.endpoint + '）';
+    paintCloudUI();
+    return;
+  }
+  try {
+    CLOUD.cloud = window.WorkBuddyCloud.createWorkBuddyCloud({
+      endpoint:          WB_PUBLIC_CONFIG.endpoint,
+      oauthRelayBaseUrl: WB_PUBLIC_CONFIG.oauthRelayBaseUrl,
+      publishableKey:    WB_PUBLIC_CONFIG.publishableKey
+    });
+    CLOUD.ok = true;
+    CLOUD.state = 'idle';
+    CLOUD.err = '';
+  } catch (e) {
+    CLOUD.state = 'error';
+    CLOUD.err = '云服务初始化失败：' + cloudErrText(e);
+  }
+  paintCloudUI();
+}
+
+async function cloudPull() {
+  const { data, error } = await CLOUD.cloud.database
+    .from('boards')
+    .select('room, board, updated_at')
+    .eq('room', NET.room)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+/** 进空房间时：先看云端有没有历史画布，有就恢复并广播，没有再放示例内容 */
+async function cloudRestoreOrSeed() {
+  if (!CLOUD.ok) { seedToServer(); return; }
+  CLOUD.state = 'loading'; paintCloudUI();
+  let snap = null;
+  try { snap = await cloudPull(); }
+  catch (e) { snap = null; CLOUD.err = cloudErrText(e); }
+
+  // 异步等待期间可能已经有人放了内容，以房间现状为准
+  if (S.notes.length || S.strokes.length) {
+    CLOUD.state = 'ready'; CLOUD.err = ''; paintCloudUI(); return;
+  }
+  const board = snap && snap.board ? sanitizeBoard(snap.board) : null;
+  const has = !!(board && (board.notes.length || board.strokes.length));
+  if (has) {
+    const ops = boardToOps(board);
+    applyOps(ops);
+    netSend({ t: 'ops', ops });        // 让房间里其他人也拿到这份历史
+    CLOUD.lastSaved = Date.parse(snap.updated_at) || 0;
+    fitToContent();
+  }
+  CLOUD.state = 'ready'; CLOUD.err = '';
+  clearTimeout(CLOUD.saveTimer);       // 刚读回来的，不用立刻回写
+  paintCloudUI();
+  if (!has) seedToServer();
+}
+
+function scheduleCloudSave(delay) {
+  if (!CLOUD.ok) return;
+  clearTimeout(CLOUD.saveTimer);
+  CLOUD.saveTimer = setTimeout(cloudSave, delay == null ? 2200 : delay);
+}
+
+async function cloudSave() {
+  if (!CLOUD.ok) return;
+  const snap = boardSnapshot();
+  let payload = '';
+  try { payload = JSON.stringify(snap); } catch (e) { payload = ''; }
+  if (!payload || payload.length > CLOUD_MAX_CHARS) {
+    CLOUD.state = 'error';
+    CLOUD.err = '画布超出云端备份上限（约 1.2MB 文本），实时协作不受影响';
+    paintCloudUI();
+    return;
+  }
+  CLOUD.state = 'saving'; paintCloudUI();
+  try {
+    // updated_at 必须显式带：列的 DEFAULT now() 只在 INSERT 时生效，
+    // 冲突走 UPDATE 时不会重算，不写就会永远停在第一次的时间
+    const { error } = await CLOUD.cloud.database
+      .from('boards')
+      .upsert({ room: NET.room, board: snap, updated_at: new Date().toISOString() }, { onConflict: 'room' });
+    if (error) throw error;
+    CLOUD.state = 'ready'; CLOUD.err = ''; CLOUD.lastSaved = Date.now();
+  } catch (e) {
+    CLOUD.state = 'error'; CLOUD.err = cloudErrText(e);
+  }
+  paintCloudUI();
+}
+
+const CLOUD_LABEL = { idle: '云端', loading: '读取中…', ready: '已存云端', saving: '保存中…', error: '备份失败' };
+function paintCloudUI() {
+  if (!cloudBtn) return;
+  cloudBtn.dataset.state = CLOUD.state;
+  cloudText.textContent = CLOUD_LABEL[CLOUD.state] || '云端';
+  cloudBtn.title = CLOUD.state === 'ready'
+    ? ('云端备份正常' + (CLOUD.lastSaved ? ' · 上次 ' + new Date(CLOUD.lastSaved).toLocaleTimeString('zh-CN', { hour12: false }) : '') + ' · 点击立即备份')
+    : (CLOUD.err || '点击立即备份到云端');
+}
+
+cloudBtn.addEventListener('click', () => {
+  if (!CLOUD.ok) { cloudInit(); return; }
+  clearTimeout(CLOUD.saveTimer);
+  cloudSave();
+});
+
+/* 切到后台时尽量把待存的改动刷下去 */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && CLOUD.ok) { clearTimeout(CLOUD.saveTimer); cloudSave(); }
+});
 
 /* ============================================================
    9. 渲染
@@ -1946,6 +2220,8 @@ paintNotes();
 setTool('select');
 syncHistUI();
 applyView();
+resolveRoom();           // 先定房间，云端读写都要用它
+cloudInit();             // 备好云端客户端（失败也能继续用，只是不备份）
 netConnect();          // 连上后由 init 下发真实画布；连不上会退化为单机模式
 requestAnimationFrame(loop);
 
